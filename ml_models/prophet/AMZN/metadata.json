@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "trained_at": "2026-04-09T13:13:50.307700+00:00",
+  "features_used": [
+    "Close"
+  ],
+  "mape": 13.3497,
+  "n_samples": 501,
+  "forecast_ratios": {
+    "1d": 0.913211,
+    "7d": 0.901178,
+    "30d": 0.97333
+  },
+  "last_close": 221.25
+}

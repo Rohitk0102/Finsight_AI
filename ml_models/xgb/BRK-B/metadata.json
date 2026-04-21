@@ -1,0 +1,36 @@
+{
+  "version": "v1",
+  "trained_at": "2026-04-09T13:15:43.691383+00:00",
+  "features_used": [
+    "ema_20",
+    "ema_50",
+    "ema_200",
+    "rsi",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "stoch_k",
+    "stoch_d",
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "bb_width",
+    "atr",
+    "obv",
+    "volume_sma",
+    "volume_ratio",
+    "return_1d",
+    "return_5d",
+    "return_20d",
+    "volatility_20d",
+    "dist_from_52w_high",
+    "dist_from_52w_low"
+  ],
+  "mape": 2.124,
+  "n_samples": 250,
+  "forecast_ratios": {
+    "1d": 1.0002693307468082,
+    "7d": 1.0182503704729025,
+    "30d": 1.0358361924545663
+  }
+}

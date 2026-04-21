@@ -1,0 +1,41 @@
+# SSL certificates (generated locally by start.sh — never commit)
+certs/
+
+# Environment files
+.env
+backend/.env
+frontend/.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# ML model artifacts
+ml_models/*.pkl
+ml_models/*.h5
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
