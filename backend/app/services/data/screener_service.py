@@ -48,13 +48,12 @@ class ScreenerService:
                 query = query.eq("exchange", filters["exchange"])
             
             if filters.get("sector"):
-                # Use exact match or variations for Healthcare
+                # Use ILIKE for case-insensitive matching and handle Healthcare variations
                 sector_val = filters["sector"]
                 if sector_val.lower().replace(" ", "") == "healthcare":
-                    # Handle both 'Healthcare' and 'Health Care'
-                    query = query.or_("sector.eq.Healthcare,sector.eq.Health Care")
+                    query = query.or_("sector.ilike.Healthcare,sector.ilike.Health Care")
                 else:
-                    query = query.eq("sector", sector_val)
+                    query = query.ilike("sector", sector_val)
                 
             if filters.get("min_market_cap"):
                 query = query.gte("market_cap", filters["min_market_cap"])

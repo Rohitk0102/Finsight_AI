@@ -4,6 +4,7 @@ from app.core.config import settings
 from functools import lru_cache
 import json
 from typing import Any, Optional
+from fastapi.encoders import jsonable_encoder
 
 
 _redis_pool: Optional[Redis] = None
@@ -33,7 +34,7 @@ async def redis_get(key: str) -> Optional[Any]:
 
 async def redis_set(key: str, value: Any, ttl: int = 300) -> None:
     r = await get_redis()
-    await r.setex(key, ttl, json.dumps(value))
+    await r.setex(key, ttl, json.dumps(jsonable_encoder(value)))
 
 
 async def redis_delete(key: str) -> None:

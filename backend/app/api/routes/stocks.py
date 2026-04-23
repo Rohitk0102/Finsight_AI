@@ -23,7 +23,7 @@ async def search_stocks(
         return cached
 
     results = await fetcher.search_stocks(q, exchange)
-    await redis_set(cache_key, [r.model_dump() for r in results], ttl=3600)
+    await redis_set(cache_key, [r.model_dump(mode="json") for r in results], ttl=3600)
     return results
 
 
@@ -40,7 +40,7 @@ async def get_stock_detail(ticker: str, request: Request):
     if not data:
         raise HTTPException(status_code=404, detail=f"Stock '{ticker}' not found")
 
-    await redis_set(cache_key, data.model_dump(), ttl=60)
+    await redis_set(cache_key, data.model_dump(mode="json"), ttl=60)
     return data
 
 
@@ -60,7 +60,7 @@ async def get_ohlcv(
 
     data = await fetcher.get_ohlcv(ticker, period, interval)
     ttl = 60 if interval == "1d" else 3600
-    await redis_set(cache_key, [d.model_dump() for d in data], ttl=ttl)
+    await redis_set(cache_key, [d.model_dump(mode="json") for d in data], ttl=ttl)
     return data
 
 

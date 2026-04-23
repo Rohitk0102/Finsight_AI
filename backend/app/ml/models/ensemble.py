@@ -74,6 +74,7 @@ class EnsemblePredictor:
         # {ticker: (model_version_str, models_dict)}
         # Version tag is checked on every call; stale entries are evicted automatically.
         self._xgb_cache: dict[str, tuple[str, dict]] = {}
+        self._lstm_cache: dict[str, tuple[str, Any]] = {}
 
     async def predict(
         self,
@@ -279,10 +280,16 @@ class EnsemblePredictor:
             feat_vals = featured_df[available].values[-seq_len:].astype(np.float32)
             feat_scaled = scaler_X.transform(feat_vals)
 
-            model = build_lstm(len(available))
-            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-            model.load_state_dict(state_dict)
-            model.eval()
+            cached = self._lstm_cache.get(ticker)
+            if cached is None or cached[0] != version:
+                model = build_lstm(len(available))
+                state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+                model.load_state_dict(state_dict)
+                model.eval()
+                self._lstm_cache[ticker] = (version, model)
+                logger.info(f"LSTM model loaded", extra={"ticker": ticker, "model_version": version})
+            else:
+                model = cached[1]
 
             with torch.no_grad():
                 x = torch.tensor(feat_scaled, dtype=torch.float32).unsqueeze(0)

@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import uuid
 from fastapi import APIRouter, HTTPException, status, Depends
 from app.schemas.user import UserProfile, UserProfileUpdate
 from app.core.supabase import supabase

@@ -527,69 +527,6 @@ class GrowwBroker:
             "summary": summary,
         }
     
-    # ===== CSV Import Fallback =====
-    
-    def import_from_csv(self, csv_content: str) -> List[Dict[str, Any]]:
-        """
-        Parse Groww portfolio CSV export (fallback method)
-        
-        Expected columns: Symbol, Quantity, Avg Cost, LTP
-        
-        Args:
-            csv_content: CSV file content as string
-            
-        Returns:
-            List of holdings parsed from CSV
-        """
-        holdings = []
-        reader = csv.DictReader(io.StringIO(csv_content))
-        
-        for row in reader:
-            try:
-                ticker = row.get("Symbol", "").strip()
-                if not ticker:
-                    continue
-                
-                qty = float(row.get("Quantity", 0))
-                avg = float(row.get("Avg Cost", 0))
-                ltp = float(row.get("LTP", 0))
-                
-                invested = qty * avg
-                current = qty * ltp
-                
-                holdings.append({
-                    "ticker": f"{ticker}.NS",
-                    "name": ticker,
-                    "quantity": qty,
-                    "average_price": avg,
-                    "current_price": ltp,
-                    "current_value": current,
-                    "invested_value": invested,
-                    "unrealized_pnl": current - invested,
-                    "unrealized_pnl_pct": (
-                        ((current - invested) / invested * 100) 
-                        if invested else 0
-                    ),
-                    "day_change": 0,
-                    "day_change_pct": 0,
-                    "last_updated": _utc_now_iso(),
-                })
-                
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Skipping invalid CSV row: {str(e)}")
-                continue
-        
-        return holdings
-    
-    def get_auth_url(self) -> str:
-        """
-        Get Groww Trading API subscription URL
-        
-        Returns:
-            URL to subscribe to Groww Trading API
-        """
-        raise NotImplementedError("Groww Trading API uses manual access tokens and does not support an OAuth auth URL")
-    
     def get_api_docs_url(self) -> str:
         """
         Get Groww Trading API documentation URL

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, TrendingUp, Newspaper,
   SlidersHorizontal, Briefcase, Settings,
-  LogOut, HelpCircle, Leaf, CandlestickChart,
+  LogOut, HelpCircle, Leaf, CandlestickChart, Terminal
 } from "lucide-react";
 import { useClerk, useUser } from "@clerk/nextjs";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ import { useMarketPulseStore } from "@/lib/markets/store";
 
 const menuItems = [
   { href: "/dashboard", label: "Dashboard",   icon: LayoutDashboard, badge: null },
+  { href: "/finsight",  label: "Finsight AI", icon: Terminal,        badge: "NEW" },
   { href: "/predictor", label: "Predictor",   icon: TrendingUp,      badge: "AI" },
   { href: "/news",      label: "Market News", icon: Newspaper,        badge: null },
   { href: "/screener",  label: "Screener",    icon: SlidersHorizontal,badge: null },
@@ -28,9 +29,10 @@ const generalItems = [
 
 interface SidebarProps {
   onClose?: () => void;
+  onOpenFinsight?: () => void;
 }
 
-export function Sidebar({ onClose }: SidebarProps) {
+export function Sidebar({ onClose, onOpenFinsight }: SidebarProps) {
   const pathname = usePathname();
   const { signOut } = useClerk();
   const { user } = useUser();
@@ -104,6 +106,31 @@ export function Sidebar({ onClose }: SidebarProps) {
           <nav className="space-y-0.5">
             {sidebarMenuItems.map(({ href, label, icon: Icon, badge }) => {
               const active = isActive(href);
+
+              if (href === "/finsight") {
+                return (
+                  <button
+                    key={href}
+                    onClick={() => {
+                      onOpenFinsight?.();
+                      onClose?.();
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13.5px] font-medium transition-all duration-200",
+                      "text-muted-foreground hover:text-foreground hover:bg-accent/50 hover:backdrop-blur-sm"
+                    )}
+                  >
+                    <Icon className="h-4 w-4 flex-shrink-0" />
+                    <span className="flex-1 text-left">{label}</span>
+                    {badge && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">
+                        {badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              }
+
               return (
                 <Link
                   key={href}

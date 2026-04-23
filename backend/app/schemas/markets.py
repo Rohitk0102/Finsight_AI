@@ -221,9 +221,20 @@ class PortfolioPosition(BaseModel):
     dayChangePct: float
 
 
+class CompanyAbout(BaseModel):
+    description: Optional[str] = None
+    ceo: Optional[str] = None
+    founded: Optional[str] = None
+    industry: Optional[str] = None
+    website: Optional[str] = None
+    employees: Optional[int] = None
+    headquarters: Optional[str] = None
+
+
 class CompanyDetailResponse(BaseModel):
     profile: PriceSnapshot
     stats: KeyStats
+    about: CompanyAbout = Field(default_factory=CompanyAbout)
     analystConsensus: AnalystConsensus
     peers: list[PeerComparisonItem] = Field(default_factory=list)
     financials: FinancialsSnapshot

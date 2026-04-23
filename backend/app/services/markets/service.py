@@ -5,8 +5,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.schemas.markets import (
+    AnalystConsensus,
     ChartRange,
     CompanyDetailResponse,
+    EnrichedNewsArticle,
+    FinancialsSnapshot,
+    KeyStats,
     MarketMover,
     MarketNewsFeedResponse,
     MarketOverviewResponse,
@@ -148,15 +152,7 @@ class MarketPulseService:
                 logger.warning(f"Overview news fetch failed: {exc}")
                 return []
 
-        (
-            indices,
-            market_lists,
-            watchlist,
-            fii_dii,
-            ipo_tracker,
-            calendar,
-            market_news,
-        ) = await asyncio.gather(
+        results = await asyncio.gather(
             self.data_provider.get_indices(),
             self.data_provider.get_market_lists(),
             self._gather_quotes(watchlist_symbols, limit=6),
@@ -164,7 +160,17 @@ class MarketPulseService:
             self.ipo_provider.list_ipos(),
             self.calendar_provider.list_events(),
             safe_news_fetch(),
+            return_exceptions=True
         )
+
+        # Unpack with error handling
+        indices = results[0] if not isinstance(results[0], Exception) else []
+        market_lists = results[1] if not isinstance(results[1], Exception) else ([], [], [], [])
+        watchlist = results[2] if not isinstance(results[2], Exception) else []
+        fii_dii = results[3] if not isinstance(results[3], Exception) else await self.get_fii_dii_activity()
+        ipo_tracker = results[4] if not isinstance(results[4], Exception) else []
+        calendar = results[5] if not isinstance(results[5], Exception) else []
+        market_news = results[6] if not isinstance(results[6], Exception) else []
 
         top_gainers, top_losers, most_active, heatmap = market_lists
 
@@ -245,17 +251,44 @@ class MarketPulseService:
         )
 
     async def get_company_detail(self, symbol: str, portfolio_position=None) -> CompanyDetailResponse:
-        quote_and_stats, analyst, peers, financials, shareholding = await asyncio.gather(
+        results = await asyncio.gather(
             self.data_provider.get_company_profile(symbol),
             self.data_provider.get_analyst_consensus(symbol),
             self.data_provider.get_peers(symbol),
             self.data_provider.get_financials(symbol),
             self.data_provider.get_shareholding(symbol),
+            return_exceptions=True
         )
-        quote, stats = quote_and_stats
+        
+        # Result mapping with fallback for exceptions
+        if not isinstance(results[0], Exception):
+            quote, stats, about = results[0]
+        else:
+            try:
+                # One last try for profile if the first one failed
+                quote, stats, about = await self.data_provider.get_company_profile(symbol)
+            except Exception as exc:
+                logger.error(f"Critical failure fetching company profile for {symbol}: {exc}")
+                # Ultimate fallback - return a bare snapshot from identity metadata
+                identity = self.data_provider.get_symbol_identity(symbol)
+                quote = PriceSnapshot(
+                    **identity.model_dump(),
+                    currentPrice=0, change=0, changePct=0,
+                    marketStatus=compute_market_status(),
+                    lastUpdated=datetime.now(timezone.utc)
+                )
+                stats = KeyStats()
+                about = CompanyAbout()
+
+        analyst = results[1] if not isinstance(results[1], Exception) else AnalystConsensus(rating="Hold", buy=0, hold=0, sell=0)
+        peers = results[2] if not isinstance(results[2], Exception) else []
+        financials = results[3] if not isinstance(results[3], Exception) else FinancialsSnapshot()
+        shareholding = results[4] if not isinstance(results[4], Exception) else []
+
         return CompanyDetailResponse(
             profile=quote,
             stats=stats,
+            about=about,
             analystConsensus=analyst,
             peers=peers,
             financials=financials,
@@ -273,15 +306,24 @@ class MarketPulseService:
         normalized = self.normalize_symbol(symbol)
         
         try:
-            (quote, _), peer_items, articles = await asyncio.gather(
+            # Parallel fetch with exception handling
+            fetch_results = await asyncio.gather(
                 self.data_provider.get_company_profile(normalized),
                 self.data_provider.get_peers(normalized),
                 self.news_provider.get_company_news(normalized, limit=limit),
+                return_exceptions=True
             )
+            
+            # Map results with fallbacks
+            quote_stats = fetch_results[0] if not isinstance(fetch_results[0], Exception) else await self.data_provider.get_company_profile(normalized)
+            peer_items = fetch_results[1] if not isinstance(fetch_results[1], Exception) else []
+            articles = fetch_results[2] if not isinstance(fetch_results[2], Exception) else []
+            
+            quote, _ = quote_stats
         except Exception as exc:
-            logger.error(f"Company news fetch failed for {normalized}: {exc}")
-            # Try to at least return the profile if news fails, but for simplicity returning empty
+            logger.error(f"Fundamental company news fetch failed for {normalized}: {exc}")
             return []
+            
         primary = SymbolIdentity(
             symbol=quote.symbol,
             displaySymbol=quote.displaySymbol,
@@ -300,14 +342,16 @@ class MarketPulseService:
             )
             for peer in peer_items
         ]
-        enriched = await asyncio.gather(
+        
+        # News analysis can also fail or be slow
+        enriched_results = await asyncio.gather(
             *[self.impact_analyzer.analyze(article, primary, peers) for article in articles],
             return_exceptions=True,
         )
         return [
             item.model_copy(update={"bookmarked": True}) if item.sourceUrl in bookmarked_urls else item
-            for item in enriched
-            if not isinstance(item, Exception)
+            for item in enriched_results
+            if isinstance(item, EnrichedNewsArticle)
         ]
 
     async def get_news_feed(

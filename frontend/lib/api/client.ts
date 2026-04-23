@@ -110,6 +110,7 @@ export const predictApi = {
     apiClient.get(`/predict/${ticker}?risk_profile=${riskProfile}&horizon=${horizon}`),
   portfolioAnalysis: () => apiClient.get("/predict/portfolio/analysis"),
   history: (ticker: string) => apiClient.get(`/predict/history/${ticker}`),
+  getAccuracySummary: () => apiClient.get("/predict/accuracy/model/summary"),
 };
 
 export const newsApi = {
@@ -182,4 +183,10 @@ export const marketsApi = {
     thresholdValue: number;
   }) => apiClient.post("/markets/alerts", payload),
   deleteAlert: (alertId: string) => apiClient.delete(`/markets/alerts/${alertId}`),
+};
+
+export const finsightApi = {
+  ticker: (symbol: string) => apiClient.get(`/finsight/ticker/${symbol}`),
+  sessions: (userId: string) => apiClient.get(`/finsight/sessions`, { params: { user_id: userId } }),
+  history: (sessionId: string, userId: string) => apiClient.get(`/finsight/history/${sessionId}`, { params: { user_id: userId } }),
 };

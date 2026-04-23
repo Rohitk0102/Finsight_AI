@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Any
 import traceback
 
 from fastapi import APIRouter, Query, Request, HTTPException
@@ -42,9 +42,21 @@ async def _cache_get(cache_key: str):
         return None
 
 
+from decimal import Decimal
+
+def _cast_decimals(data: Any) -> Any:
+    if isinstance(data, list):
+        return [_cast_decimals(i) for i in data]
+    if isinstance(data, dict):
+        return {k: _cast_decimals(v) for k, v in data.items()}
+    if isinstance(data, Decimal):
+        return float(data)
+    return data
+
+
 async def _cache_set(cache_key: str, value, ttl: int) -> None:
     try:
-        await redis_set(cache_key, value, ttl=ttl)
+        await redis_set(cache_key, _cast_decimals(value), ttl=ttl)
     except Exception as exc:
         logger.warning(f"Cache set skipped for {cache_key}: {exc}")
 

@@ -19,7 +19,7 @@ hiredis==2.3.2
 # Data
 pandas>=2.2
 numpy>=1.26
-yfinance>=0.2.40
+yfinance>=1.3.0
 pandas-ta==0.4.71b0
 
 # ML

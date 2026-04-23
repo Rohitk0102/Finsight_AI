@@ -19,6 +19,7 @@ import re
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
 from app.api.routes import auth, stocks, predict, news, portfolio, broker, screener, markets
+from app.finsight.router import router as finsight_router
 from app.api.middleware import LoggingMiddleware, ProcessTimeMiddleware
 
 
@@ -122,6 +123,7 @@ app.include_router(portfolio.router, prefix=PREFIX)
 app.include_router(broker.router, prefix=PREFIX)
 app.include_router(screener.router, prefix=PREFIX)
 app.include_router(markets.router, prefix=PREFIX)
+app.include_router(finsight_router, prefix=PREFIX + "/finsight", tags=["Finsight AI"])
 
 
 @app.get("/health")

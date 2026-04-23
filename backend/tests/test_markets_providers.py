@@ -89,7 +89,7 @@ class FakeClient:
 async def test_gemini_analyzer_caches_success(monkeypatch):
     fallback = FakeFallback()
     analyzer = GeminiImpactAnalyzer(fallback)
-    analyzer.api_key = "test-key"
+    analyzer.api_keys = ["test-key"]
     article = _article("cache-success")
     call_counter = {"count": 0}
 
@@ -161,7 +161,7 @@ async def test_gemini_analyzer_sets_quota_cooldown(monkeypatch):
 async def test_huggingface_analyzer_caches_success(monkeypatch):
     fallback = FakeFallback()
     analyzer = HuggingFaceImpactAnalyzer(fallback)
-    analyzer.api_key = "test-key"
+    analyzer.api_keys = ["test-key"]
     article = _article("hf-cache-success")
     call_counter = {"count": 0}
 
@@ -198,7 +198,7 @@ async def test_huggingface_analyzer_caches_success(monkeypatch):
 async def test_huggingface_analyzer_sets_quota_cooldown(monkeypatch):
     fallback = FakeFallback()
     analyzer = HuggingFaceImpactAnalyzer(fallback)
-    analyzer.api_key = "test-key"
+    analyzer.api_keys = ["test-key"]
     article = _article("hf-quota-hit")
     call_counter = {"count": 0}
 
@@ -222,4 +222,4 @@ async def test_huggingface_analyzer_sets_quota_cooldown(monkeypatch):
     assert fallback.calls == 2
     assert first.aiSummary == "Fallback summary."
     assert second.aiSummary == "Fallback summary."
-    assert analyzer._cooldown_until is not None
+    assert "test-key" in analyzer._cooldowns

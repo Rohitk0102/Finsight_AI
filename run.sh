@@ -13,13 +13,19 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 CERTS_DIR="$ROOT_DIR/certs"
+LOGS_DIR="$ROOT_DIR/logs"
+
 BACKEND_PID_FILE="$ROOT_DIR/.backend.pid"
 FRONTEND_PID_FILE="$ROOT_DIR/.frontend.pid"
+WORKER_PID_FILE="$ROOT_DIR/.celery_worker.pid"
+BEAT_PID_FILE="$ROOT_DIR/.celery_beat.pid"
+
+mkdir -p "$LOGS_DIR"
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BRIGHT_GREEN}  ┌─────────────────────────────────────────┐${RESET}"
-echo -e "${BRIGHT_GREEN}  │        Finsight AI — Manual Start        │${RESET}"
+echo -e "${BRIGHT_GREEN}  │        Finsight AI — Manual Start       │${RESET}"
 echo -e "${BRIGHT_GREEN}  └─────────────────────────────────────────┘${RESET}"
 echo ""
 
@@ -27,9 +33,16 @@ echo ""
 cleanup() {
   echo ""
   echo -e "${YELLOW}  Shutting down...${RESET}"
-  [ -f "$BACKEND_PID_FILE"  ] && kill "$(cat $BACKEND_PID_FILE)"  2>/dev/null && rm "$BACKEND_PID_FILE"
-  [ -f "$FRONTEND_PID_FILE" ] && kill "$(cat $FRONTEND_PID_FILE)" 2>/dev/null && rm "$FRONTEND_PID_FILE"
-  # Kill any child processes
+  [ -f "$BACKEND_PID_FILE"  ] && kill "$(cat $BACKEND_PID_FILE)"  2>/dev/null && rm -f "$BACKEND_PID_FILE"
+  [ -f "$FRONTEND_PID_FILE" ] && kill "$(cat $FRONTEND_PID_FILE)" 2>/dev/null && rm -f "$FRONTEND_PID_FILE"
+  [ -f "$WORKER_PID_FILE"   ] && kill "$(cat $WORKER_PID_FILE)"   2>/dev/null && rm -f "$WORKER_PID_FILE"
+  [ -f "$BEAT_PID_FILE"     ] && kill "$(cat $BEAT_PID_FILE)"     2>/dev/null && rm -f "$BEAT_PID_FILE"
+  
+  pkill -f "uvicorn.*app.main:app" 2>/dev/null || true
+  pkill -f "celery.*worker" 2>/dev/null || true
+  pkill -f "celery.*beat" 2>/dev/null || true
+  
+  # Kill any child processes attached to this script
   kill 0 2>/dev/null
   echo -e "${GREEN}  Stopped. Goodbye!${RESET}"
   exit 0
@@ -105,27 +118,36 @@ else
   echo -e "${GREEN}  ✓  Node dependencies up to date (skipping install)${RESET}"
 fi
 
-# ── Check and kill existing processes on ports ───────────────────────────────
+# ── Stop existing processes ───────────────────────────────────────────────────
 echo ""
-echo -e "${CYAN}  ─── Checking for existing processes...${RESET}"
+echo -e "${CYAN}  ─── Stopping existing processes...${RESET}"
+
+[ -f "$BACKEND_PID_FILE" ] && kill "$(cat "$BACKEND_PID_FILE")" 2>/dev/null && rm -f "$BACKEND_PID_FILE"
+[ -f "$FRONTEND_PID_FILE" ] && kill "$(cat "$FRONTEND_PID_FILE")" 2>/dev/null && rm -f "$FRONTEND_PID_FILE"
+[ -f "$WORKER_PID_FILE" ] && kill "$(cat "$WORKER_PID_FILE")" 2>/dev/null && rm -f "$WORKER_PID_FILE"
+[ -f "$BEAT_PID_FILE" ] && kill "$(cat "$BEAT_PID_FILE")" 2>/dev/null && rm -f "$BEAT_PID_FILE"
+
+pkill -f "uvicorn.*app.main:app" 2>/dev/null || true
+pkill -f "celery.*worker" 2>/dev/null || true
+pkill -f "celery.*beat" 2>/dev/null || true
 
 # Check port 8000 (backend)
 EXISTING_BACKEND=$(lsof -ti:8000 2>/dev/null)
 if [ ! -z "$EXISTING_BACKEND" ]; then
-  echo -e "${YELLOW}  ⚠  Port 8000 in use (PID: $EXISTING_BACKEND) — stopping it...${RESET}"
-  kill $EXISTING_BACKEND 2>/dev/null
+  echo -e "${YELLOW}  ⚠  Port 8000 still in use (PID: $EXISTING_BACKEND) — killing it...${RESET}"
+  kill -9 $EXISTING_BACKEND 2>/dev/null
   sleep 1
 fi
 
 # Check port 3000 (frontend)
 EXISTING_FRONTEND=$(lsof -ti:3000 2>/dev/null)
 if [ ! -z "$EXISTING_FRONTEND" ]; then
-  echo -e "${YELLOW}  ⚠  Port 3000 in use (PID: $EXISTING_FRONTEND) — stopping it...${RESET}"
-  kill $EXISTING_FRONTEND 2>/dev/null
+  echo -e "${YELLOW}  ⚠  Port 3000 still in use (PID: $EXISTING_FRONTEND) — killing it...${RESET}"
+  kill -9 $EXISTING_FRONTEND 2>/dev/null
   sleep 1
 fi
 
-echo -e "${GREEN}  ✓  Ports are clear${RESET}"
+echo -e "${GREEN}  ✓  Processes stopped and ports are clear${RESET}"
 
 # ── Load env vars for backend ─────────────────────────────────────────────────
 set -a
@@ -136,28 +158,46 @@ fi
 set +a
 
 # ── Start backend on HTTP ─────────────────────────────────────────────────────
-# Backend runs on plain HTTP in dev. The Next.js rewrite proxy (undici-based)
-# does not honor NODE_TLS_REJECT_UNAUTHORIZED, so self-signed TLS on the
-# backend breaks the `/api/backend/*` proxy with UNABLE_TO_VERIFY_LEAF_SIGNATURE.
-# Browser still talks to the frontend over HTTPS; the proxy → backend hop is
-# localhost-only and safe over HTTP.
 echo ""
 echo -e "${CYAN}  ─── Starting backend on http://localhost:8000...${RESET}"
 cd "$BACKEND_DIR"
-uvicorn app.main:app --reload --port 8000 --log-level warning &
+nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload \
+  > "$LOGS_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > "$BACKEND_PID_FILE"
+echo -e "${GREEN}  ✓  Backend started (PID: $BACKEND_PID)${RESET}"
+
+# ── Start Celery Worker ───────────────────────────────────────────────────────
+echo -e "${CYAN}  ─── Starting Celery worker...${RESET}"
+nohup celery -A app.tasks.celery_app worker --loglevel=info --pool=threads --concurrency=4 \
+  > "$LOGS_DIR/celery_worker.log" 2>&1 &
+WORKER_PID=$!
+echo "$WORKER_PID" > "$WORKER_PID_FILE"
+echo -e "${GREEN}  ✓  Celery worker started (PID: $WORKER_PID)${RESET}"
+
+# ── Start Celery Beat ─────────────────────────────────────────────────────────
+echo -e "${CYAN}  ─── Starting Celery beat...${RESET}"
+nohup celery -A app.tasks.celery_app beat --loglevel=info \
+  > "$LOGS_DIR/celery_beat.log" 2>&1 &
+BEAT_PID=$!
+echo "$BEAT_PID" > "$BEAT_PID_FILE"
+echo -e "${GREEN}  ✓  Celery beat started (PID: $BEAT_PID)${RESET}"
+
+cd "$ROOT_DIR"
 
 # ── Start frontend with HTTPS ─────────────────────────────────────────────────
 echo -e "${CYAN}  ─── Starting frontend on https://localhost:3000...${RESET}"
 cd "$FRONTEND_DIR"
-npm run dev &
+nohup npm run dev > "$LOGS_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > "$FRONTEND_PID_FILE"
+echo -e "${GREEN}  ✓  Frontend started (PID: $FRONTEND_PID)${RESET}"
+
+cd "$ROOT_DIR"
 
 # ── Wait for services ─────────────────────────────────────────────────────────
 echo ""
-echo -e "${YELLOW}  Waiting for services to start...${RESET}"
+echo -ne "${YELLOW}  Waiting for services to start...${RESET}"
 sleep 4
 
 BACKEND_UP=false
@@ -167,15 +207,18 @@ for i in $(seq 1 15); do
   if curl -s http://localhost:8000/health > /dev/null 2>&1; then
     BACKEND_UP=true; break
   fi
+  echo -ne "${YELLOW}.${RESET}"
   sleep 1
 done
 
-for i in $(seq 1 20); do
+for i in $(seq 1 25); do
   if curl -k -s https://localhost:3000 > /dev/null 2>&1; then
     FRONTEND_UP=true; break
   fi
+  echo -ne "${YELLOW}.${RESET}"
   sleep 1
 done
+echo ""
 
 # ── Status ────────────────────────────────────────────────────────────────────
 echo ""
@@ -201,8 +244,17 @@ echo -e "  ${YELLOW}Note: You may see a certificate warning in your browser.${RE
 echo -e "  ${YELLOW}This is normal for self-signed certificates.${RESET}"
 echo -e "  ${YELLOW}Click 'Advanced' → 'Proceed to localhost' to continue.${RESET}"
 echo ""
-echo -e "  ${BOLD}Press Ctrl+C to stop both servers.${RESET}"
+echo -e "  ${CYAN}Logs are being written to:${RESET}"
+echo -e "  - logs/backend.log"
+echo -e "  - logs/frontend.log"
+echo -e "  - logs/celery_worker.log"
+echo -e "  - logs/celery_beat.log"
+echo ""
+echo -e "  ${BOLD}Press Ctrl+C to stop all servers.${RESET}"
 echo ""
 
-# ── Stream logs ───────────────────────────────────────────────────────────────
-wait
+# ── Tail logs to console ──────────────────────────────────────────────────────
+tail -f "$LOGS_DIR/backend.log" "$LOGS_DIR/frontend.log" "$LOGS_DIR/celery_worker.log" "$LOGS_DIR/celery_beat.log" &
+TAIL_PID=$!
+
+wait $TAIL_PID

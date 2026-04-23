@@ -129,9 +129,42 @@ class StockDataFetcher:
             logger.error(f"FMP search error: {e}")
             return []
 
-    async def _search_fallback(self, query: str) -> List[StockSearchResult]:
-        # Simple local search in a limited universe could go here
-        return []
+    async def _search_fallback(self, query: str, exchange: Optional[str] = None) -> List[StockSearchResult]:
+        """Search via Yahoo Finance as fallback."""
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            results = []
+            for item in data.get("quotes", [])[:15]:
+                # Accept common market types
+                if item.get("quoteType") not in ("EQUITY", "ETF", "MUTUALFUND", "INDEX"):
+                    continue
+                    
+                exch = item.get("exchange", "")
+                ticker = item.get("symbol", "")
+                
+                # Filter by exchange if provided
+                if exchange and exchange.upper() not in exch.upper():
+                    if exchange.upper() == "NSE" and ".NS" not in ticker:
+                        continue
+                    if exchange.upper() == "BSE" and ".BO" not in ticker:
+                        continue
+                        
+                results.append(StockSearchResult(
+                    ticker=ticker,
+                    name=item.get("shortname") or item.get("longname") or ticker,
+                    exchange=exch,
+                    sector=item.get("sectorDisp") or item.get("sector"),
+                    industry=item.get("industryDisp") or item.get("industry"),
+                ))
+            return results
+        except Exception as e:
+            logger.error(f"Yahoo Finance search error: {e}")
+            return []
 
     async def get_stock_detail(self, ticker: str) -> Optional[StockDetail]:
         """
@@ -285,7 +318,17 @@ class StockDataFetcher:
         """
         Fast multi-provider live price fetcher with competitive parallel racing.
         We launch multiple requests and take the first successful one.
+        Uses service-level Redis caching for 60 seconds.
         """
+        cache_key = f"live_price:{ticker.upper()}"
+        try:
+            from app.core.redis import redis_get, redis_set
+            cached = await redis_get(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
         providers = []
         
         # 1. Finnhub (very fast, reliable)
@@ -303,16 +346,32 @@ class StockDataFetcher:
         # 3. yfinance (fallback, no key needed but can be slow/404)
         providers.append(self._get_price_yfinance(ticker))
         
-        # Racing: return the first one that succeeds
-        for task in asyncio.as_completed(providers):
-            try:
-                result = await task
-                if result and result.get("price", 0) > 0:
-                    return result
-            except Exception:
-                continue
+        # Racing: return the first one that succeeds and cancel others
+        final_result = {"ticker": ticker, "price": 0, "change": 0, "change_pct": 0, "volume": 0}
         
-        return {"ticker": ticker, "price": 0, "change": 0, "change_pct": 0, "volume": 0}
+        pending = {asyncio.create_task(p) for p in providers}
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    result = await task
+                    if result and result.get("price", 0) > 0:
+                        # Found a winner! Cancel everything else.
+                        for p_task in pending:
+                            p_task.cancel()
+                        final_result = result
+                        # We return immediately to save time
+                        if final_result.get("price", 0) > 0:
+                            try:
+                                from app.core.redis import redis_set
+                                await redis_set(cache_key, final_result, ttl=60)
+                            except Exception:
+                                pass
+                        return final_result
+                except Exception:
+                    continue
+                    
+        return final_result
 
     async def _get_price_finnhub(self, ticker: str) -> dict:
         # Finnhub uses symbols like RELIANCE.NS
@@ -359,7 +418,10 @@ class StockDataFetcher:
                 "source": "fmp"
             }
         except Exception as e:
-            logger.debug(f"FMP price fetch error for {ticker}: {e}")
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 403:
+                pass  # Ignore 403 Forbidden for FMP since API key may not cover international stocks
+            else:
+                logger.debug(f"FMP price fetch error for {ticker}: {e}")
             return {}
 
     async def _get_price_alpha_vantage(self, ticker: str) -> dict:

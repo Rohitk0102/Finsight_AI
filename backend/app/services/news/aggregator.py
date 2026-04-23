@@ -372,6 +372,10 @@ class NewsAggregator:
         
         async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
             response = await client.get(url, params=params)
+            # 403 often means the ticker is not included in the current API plan (e.g. international tickers on basic plan)
+            if response.status_code == 403:
+                logger.info(f"FMP news restricted for ticker {query} (403 Forbidden). Skipping.")
+                return []
             response.raise_for_status()
             data = response.json()
 

@@ -10,6 +10,7 @@ export default function SettingsPage() {
   const [angelClientId, setAngelClientId] = useState("");
   const [angelMpin, setAngelMpin] = useState("");
   const [angelTotp, setAngelTotp] = useState("");
+  const [growwToken, setGrowwToken] = useState("");
   const [loading, setLoading] = useState<string | null>(null);
 
   const connectUpstox = async () => {
@@ -53,6 +54,20 @@ export default function SettingsPage() {
       setAngelClientId(""); setAngelMpin(""); setAngelTotp("");
     } catch {
       toast.error("Angel One connection failed");
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const connectGroww = async () => {
+    if (!growwToken.trim()) { toast.error("Enter your Groww access token"); return; }
+    setLoading("groww");
+    try {
+      await apiClient.post(`/broker/groww/connect?access_token=${growwToken}`);
+      toast.success("Groww connected successfully!");
+      setGrowwToken("");
+    } catch {
+      toast.error("Groww connection failed");
     } finally {
       setLoading(null);
     }

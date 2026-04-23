@@ -406,3 +406,32 @@
   @apply fixed inset-0 z-40 bg-black/50 lg:hidden;
   backdrop-filter: blur(4px);
 }
+
+/* ─── Finsight AI Terminal Theme ─────────────────────────────────── */
+.finsight-theme {
+  --bg: #070a0d;
+  --sidebar: #0c1017;
+  --sidebar-border: #182232;
+  --accent: #00d68f;
+  --user-bubble: #002e1e;
+  --user-border: rgba(0, 214, 143, 0.25); /* #00d68f40 */
+  --bot-bubble: #0f1a24;
+  --bot-border: #1a2d3a;
+  --text: #a8c0cc;
+  --muted: #3d5a6a;
+  --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+.finsight-drawer {
+  font-family: var(--font-mono);
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+.finsight-accent { color: var(--accent); }
+.finsight-muted { color: var(--muted); }
+.finsight-bg { background-color: var(--bg); }
+.finsight-sidebar-bg { background-color: var(--sidebar); }
+.finsight-border { border-color: var(--sidebar-border); }
+.finsight-accent-border { border-color: var(--accent); }
+

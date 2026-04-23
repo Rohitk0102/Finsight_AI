@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import httpx
 import yfinance as yf
@@ -71,9 +71,24 @@ async def _apply_rate_limit(
         logger.warning(f"Rate limit bypassed for {endpoint} due to Redis degradation: {exc}")
 
 
+from decimal import Decimal
+
+def _cast_decimals(data: Any) -> Any:
+    if isinstance(data, list):
+        return [_cast_decimals(i) for i in data]
+    if isinstance(data, dict):
+        return {k: _cast_decimals(v) for k, v in data.items()}
+    if isinstance(data, Decimal):
+        return float(data)
+    return data
+
+
 async def _execute_query(query, *, operation: str, fail_open: bool = False):
     try:
-        return await asyncio.to_thread(query.execute)
+        result = await asyncio.to_thread(query.execute)
+        if result and result.data:
+            result.data = _cast_decimals(result.data)
+        return result
     except Exception as exc:
         if fail_open:
             logger.warning(f"{operation} skipped due to DB degradation: {exc}")
@@ -164,7 +179,7 @@ async def predict_stock(
     except Exception:
         result.volatility_forecast = None
 
-    await redis_set(cache_key, result.model_dump(), ttl=3600)
+    await redis_set(cache_key, result.model_dump(mode="json"), ttl=3600)
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
     logger.info(
@@ -234,14 +249,28 @@ async def analyze_portfolio(
     horizon = profile.data.get("investment_horizon", "medium") if profile.data else "medium"
 
     tickers = list({h["ticker"] for h in holdings.data})
-    results = []
-    for ticker in tickers[:20]:
-        try:
-            sentiment_score = await _get_sentiment(ticker)
-            pred = await predictor.predict(ticker, risk_profile=risk, horizon=horizon, sentiment_score=sentiment_score)
-            results.append(pred.model_dump())
-        except Exception as exc:
-            logger.warning(f"Skipped {ticker} in portfolio analysis: {exc}", extra={"ticker": ticker})
+    
+    # Parallelize predictions with a semaphore to prevent overwhelming the system
+    sem = asyncio.Semaphore(5)
+    
+    async def _predict_ticker(ticker: str):
+        async with sem:
+            try:
+                sentiment_score = await _get_sentiment(ticker)
+                pred = await predictor.predict(
+                    ticker, 
+                    risk_profile=risk, 
+                    horizon=horizon, 
+                    sentiment_score=sentiment_score
+                )
+                return pred.model_dump(mode="json")
+            except Exception as exc:
+                logger.warning(f"Skipped {ticker} in portfolio analysis: {exc}", extra={"ticker": ticker})
+                return None
+
+    tasks = [_predict_ticker(ticker) for ticker in tickers[:20]]
+    batch_results = await asyncio.gather(*tasks)
+    results = [r for r in batch_results if r is not None]
 
     return {"analyses": results}
 

@@ -15,7 +15,7 @@ import { useMarketSocket } from "@/hooks/use-market-socket";
 import { marketsApi } from "@/lib/api/client";
 import { marketsFeatureEnabled } from "@/lib/markets/feature-flag";
 import { useMarketPulseStore } from "@/lib/markets/store";
-import type { ChartRange, CompanyChartResponse, CompanyDetailResponse, EnrichedNewsArticle, IndicatorKey, PriceAlert } from "@/lib/markets/types";
+import type { ChartPoint, ChartRange, CompanyChartResponse, CompanyDetailResponse, EnrichedNewsArticle, IndicatorKey, PriceAlert } from "@/lib/markets/types";
 import { cn, formatCurrency, formatLargeNumber, formatPercent } from "@/lib/utils";
 
 const ranges: ChartRange[] = ["1D", "1W", "1M", "3M", "6M", "1Y", "5Y"];
@@ -31,6 +31,8 @@ export default function MarketCompanyPage() {
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [hoveredChartData, setHoveredChartData] = useState<ChartPoint | null>(null);
+  const [isDescExpanded, setIsDescExpanded] = useState(false);
   const [alertType, setAlertType] = useState<"price_above" | "price_below" | "pct_change">("price_above");
   const [thresholdValue, setThresholdValue] = useState("");
   const chartRange = useMarketPulseStore((state) => state.chartRange);
@@ -49,27 +51,69 @@ export default function MarketCompanyPage() {
   useMarketSocket(symbol ? [symbol] : []);
 
   useEffect(() => {
+    if (symbol && marketsFeatureEnabled) {
+      rememberViewed(symbol);
+    }
+  }, [symbol, rememberViewed]);
+
+  useEffect(() => {
     if (!marketsFeatureEnabled || !symbol) return;
-    rememberViewed(symbol);
     let active = true;
     const load = async () => {
       try {
         setLoading(true);
         setLoadError(null);
-        const [detailResponse, chartResponse, newsResponse, alertsResponse] = await Promise.all([
-          marketsApi.company(symbol),
-          marketsApi.companyChart(symbol, chartRange),
-          marketsApi.companyNews(symbol),
-          authLoaded && userId ? marketsApi.alerts() : Promise.resolve({ data: [] }),
-        ]);
+        
+        // Use individual try-catches to prevent one failure from crashing the whole page
+        let detailData: CompanyDetailResponse | null = null;
+        let chartData: CompanyChartResponse | null = null;
+        let newsData: EnrichedNewsArticle[] = [];
+        let alertsData: PriceAlert[] = [];
+
+        try {
+          const res = await marketsApi.company(symbol);
+          detailData = res.data;
+        } catch (err) {
+          console.error("Detail fetch failed", err);
+        }
+
+        try {
+          const res = await marketsApi.companyChart(symbol, chartRange);
+          chartData = res.data;
+        } catch (err) {
+          console.error("Chart fetch failed", err);
+        }
+
+        try {
+          const res = await marketsApi.companyNews(symbol);
+          newsData = res.data;
+        } catch (err) {
+          console.error("News fetch failed", err);
+        }
+
+        try {
+          if (authLoaded && userId) {
+            const res = await marketsApi.alerts();
+            alertsData = res.data.filter((item: PriceAlert) => item.symbol === symbol);
+          }
+        } catch (err) {
+          console.error("Alerts fetch failed", err);
+        }
+
         if (!active) return;
-        setDetail(detailResponse.data);
-        setChart(chartResponse.data);
-        setNews(newsResponse.data);
-        setAlerts(alertsResponse.data.filter((item: PriceAlert) => item.symbol === symbol));
-      } catch {
+
+        if (!detailData) {
+          throw new Error("Critical company data unavailable");
+        }
+
+        setDetail(detailData);
+        setChart(chartData);
+        setNews(newsData);
+        setAlerts(alertsData);
+      } catch (err) {
         if (!active) return;
-        setLoadError("This company view could not load its latest quote, chart, or news.");
+        console.error("Critical company view load failed", err);
+        setLoadError("The essential company data is temporarily unavailable. The upstream provider (yfinance) may be throttled.");
         toast.error("Market Pulse company view failed to load");
       } finally {
         if (active) setLoading(false);
@@ -79,7 +123,7 @@ export default function MarketCompanyPage() {
     return () => {
       active = false;
     };
-  }, [authLoaded, chartRange, rememberViewed, symbol, userId]);
+  }, [authLoaded, chartRange, symbol, userId]);
 
   if (!marketsFeatureEnabled) {
     return <MarketDisabledState />;
@@ -215,15 +259,28 @@ export default function MarketCompanyPage() {
                       {profile.companyName}
                     </h1>
                     <div className="mt-4 flex items-baseline gap-4">
-                      <p className="text-4xl font-semibold text-white">
-                        {formatCurrency(profile.currentPrice)}
+                      <p className="text-4xl font-semibold text-white transition-all duration-75">
+                        {formatCurrency(hoveredChartData ? hoveredChartData.close : profile.currentPrice)}
                       </p>
-                      <div className={cn(
-                        "flex items-center gap-1 rounded-lg px-2.5 py-1 text-sm font-bold",
-                        profile.changePct >= 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"
-                      )}>
-                        {profile.changePct >= 0 ? "+" : ""}{formatPercent(profile.changePct)}
-                      </div>
+                      
+                      {!hoveredChartData ? (
+                        <div className={cn(
+                          "flex items-center gap-1 rounded-lg px-2.5 py-1 text-sm font-bold",
+                          profile.changePct >= 0 ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"
+                        )}>
+                          {profile.changePct >= 0 ? "+" : ""}{formatPercent(profile.changePct)}
+                        </div>
+                      ) : (
+                        <span className="text-xs font-bold text-slate-500 bg-white/5 px-2.5 py-1 rounded-lg animate-fade-in">
+                          {new Date(hoveredChartData.timestamp).toLocaleString("en-IN", { 
+                            day: "numeric", 
+                            month: "short", 
+                            year: chartRange === "1D" ? undefined : "numeric",
+                            hour: "2-digit", 
+                            minute: "2-digit" 
+                          })}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -283,6 +340,35 @@ export default function MarketCompanyPage() {
                   </div>
                 )}
               </div>
+            </div>
+          </section>
+
+          {/* About Section */}
+          <section className="market-card p-6 md:p-8 animate-fade-in">
+            <h2 className="text-xl font-bold text-white mb-6">About {detail.profile.companyName}</h2>
+            
+            {detail.about.description && (
+              <div className="mb-8">
+                <p className={cn(
+                  "text-sm leading-7 text-slate-300 transition-all",
+                  !isDescExpanded && "line-clamp-3"
+                )}>
+                  {detail.about.description}
+                </p>
+                <button 
+                  onClick={() => setIsDescExpanded(!isDescExpanded)}
+                  className="text-emerald-400 text-xs font-bold mt-2 hover:underline uppercase tracking-wider"
+                >
+                  {isDescExpanded ? "Show Less" : "Read More"}
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+              <AboutStat label="CEO/MD" value={detail.about.ceo || "NA"} />
+              <AboutStat label="Founded in" value={detail.about.founded || "NA"} />
+              <AboutStat label="Headquarters" value={detail.about.headquarters || "NA"} />
+              <AboutStat label="Industry" value={detail.about.industry || "NA"} />
             </div>
           </section>
 
@@ -354,8 +440,10 @@ export default function MarketCompanyPage() {
                   range={chartRange}
                   mode={chartMode}
                   indicators={selectedIndicators}
+                  onHover={setHoveredChartData}
                 />
               </div>
+
             </div>
           </section>
 
@@ -530,6 +618,15 @@ export default function MarketCompanyPage() {
           </Tabs.Root>
         </>
       )}
+    </div>
+  );
+}
+
+function AboutStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold mb-1.5">{label}</p>
+      <p className="text-sm font-semibold text-white truncate" title={value}>{value}</p>
     </div>
   );
 }

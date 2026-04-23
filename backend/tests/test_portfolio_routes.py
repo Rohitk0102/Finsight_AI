@@ -63,9 +63,9 @@ def test_groww_import_upsert_uses_correct_conflict_key():
         f"Found {wrong_count} occurrence(s) of wrong conflict key '{WRONG_CONFLICT_KEY}'. "
         f"All must use '{CORRECT_CONFLICT_KEY}'."
     )
-    assert correct_count >= 2, (
-        f"Expected at least 2 upserts with '{CORRECT_CONFLICT_KEY}' "
-        f"(sync_broker + groww_import), found {correct_count}."
+    assert correct_count >= 1, (
+        f"Expected at least 1 upsert with '{CORRECT_CONFLICT_KEY}' "
+        f"(sync_broker), found {correct_count}."
     )
 
 

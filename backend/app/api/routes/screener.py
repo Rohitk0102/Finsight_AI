@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import uuid
 from fastapi import APIRouter, Query, Depends, Request, HTTPException
 from app.core.dependencies import get_current_user, rate_limit
 from app.core.redis import redis_get, redis_set

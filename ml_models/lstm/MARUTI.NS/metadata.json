@@ -1,6 +1,6 @@
 {
-  "version": "v1",
-  "trained_at": "2026-04-09T13:12:21.383461+00:00",
+  "version": "v2",
+  "trained_at": "2026-04-22T05:22:00.295137+00:00",
   "features_used": [
     "rsi",
     "macd",
@@ -24,8 +24,8 @@
     "dist_from_52w_high",
     "dist_from_52w_low"
   ],
-  "mape": 4.5436,
-  "n_samples": 423,
+  "mape": 6.2267,
+  "n_samples": 422,
   "seq_len": 60,
   "n_features": 21,
   "forward_days": 7

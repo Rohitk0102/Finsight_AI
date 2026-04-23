@@ -1,0 +1,351 @@
+Build "Finsight AI" — a complete Terminal Dark themed finance chatbot — 
+as a self-contained feature module that integrates into an existing 
+Next.js + FastAPI full-stack project.
+
+════════════════════════════════════════════
+PROJECT IDENTITY
+════════════════════════════════════════════
+Name:    Finsight AI
+Purpose: Bloomberg-grade stock market & portfolio intelligence chatbot
+Stack:   React 18 + Tailwind CSS (frontend) | FastAPI + Python 3.11 (backend)
+Module:  All frontend files → src/features/finsight/
+         All backend files  → backend/finsight/
+Export:  Single <FinsightChat /> React component, drop-in anywhere in app
+
+════════════════════════════════════════════
+DESIGN — TERMINAL DARK THEME
+════════════════════════════════════════════
+Aesthetic: Bloomberg Terminal meets modern AI chat. Monospace everything.
+           Data-dense, professional, zero decoration.
+
+Colors:
+  --bg:           #070a0d   (main background)
+  --sidebar:      #0c1017   (sidebar background)
+  --sidebar-border:#182232  (sidebar dividers)
+  --accent:       #00d68f   (terminal green — buttons, borders, highlights)
+  --user-bubble:  #002e1e   (user message background)
+  --user-border:  #00d68f40 (user bubble border)
+  --bot-bubble:   #0f1a24   (bot message background)
+  --bot-border:   #1a2d3a   (bot bubble border)
+  --text:         #a8c0cc   (body text)
+  --muted:        #3d5a6a   (timestamps, labels, placeholders)
+
+Typography: 'JetBrains Mono' or 'Courier New' monospace — used everywhere.
+            Logo in green uppercase. Footer in SCREAMING_SNAKE_CASE style.
+
+Finance color rules:
+  Positive % values → #00d68f (green)
+  Negative % values → #ff4d4d (red)
+  Use ▲ for gains, ▼ for losses in all text output
+
+════════════════════════════════════════════
+FRONTEND — REACT COMPONENTS
+════════════════════════════════════════════
+Create these files inside src/features/finsight/:
+
+components/
+  Sidebar.tsx
+    - Fixed 240px left panel, collapsible via hamburger toggle
+    - Top: "FINSIGHT_AI" logo in green monospace + "MARKET INTELLIGENCE v2.4" subtitle
+    - "+ NEW CONVERSATION" button with dashed green border
+    - Scrollable conversation history list with title, date, active state highlight
+    - Bottom: user avatar circle (initials), username, "Pro Plan" label
+    - Mobile: hidden by default, slides in as overlay drawer
+
+  ChatWindow.tsx
+    - Flex-grow main area, scrollable message list
+    - useRef + useEffect for auto-scroll to latest message
+    - On empty chat: show SuggestionChips component centered
+    - Renders MessageBubble for each message in array
+
+  MessageBubble.tsx
+    - User messages: right-aligned, green border bubble, "R" avatar right side
+    - Bot messages: left-aligned, dark bubble, green "F" badge avatar left side
+    - Supports **bold** markdown parsing (replace with <strong>)
+    - Inline stat rows for finance data: [TICKER | $PRICE | ▲CHANGE% | VOL]
+    - Timestamp (HH:MM) shown below each bubble in muted monospace
+    - Fade-in animation on mount (opacity 0→1, translateY 4px→0)
+
+  TypingIndicator.tsx
+    - Three dots bouncing with staggered animation (0ms, 200ms, 400ms delay)
+    - "ANALYZING MARKET DATA..." label above the dots in muted green
+    - Dot color: accent green (#00d68f)
+
+  ChatInput.tsx
+    - Textarea (auto-resize, max 4 rows) inside dark bordered container
+    - Enter = send message | Shift+Enter = new line
+    - Green arrow-up send button, disabled + dimmed while loading
+    - Character counter (dim, bottom-right)
+    - Footer label: "ENTER_TO_SEND · FINSIGHT_AI"
+
+  SuggestionChips.tsx
+    - Shown only when messages array has 0 user messages
+    - Chips: "Analyze my portfolio" | "Top movers today" | 
+             "Explain RSI" | "NVDA earnings breakdown" | "Fed rate impact"
+    - Pill style: transparent bg, green dashed border, hover fills green
+
+  MarketTicker.tsx  
+    - Horizontal scrolling ticker bar pinned below header
+    - Shows: AAPL, NVDA, MSFT, TSLA, BTC-USD, NIFTY with price + % change
+    - Positive change: green text | Negative: red text
+    - Infinite CSS scroll animation, pauses on hover
+
+hooks/
+  useChat.ts
+    - State: messages[], loading, sessionId
+    - sendMessage(text): adds user msg → sets loading → calls API → 
+      appends bot response → clears loading
+    - Supports streaming: appends tokens to last bot message in real time
+    - Stores session in localStorage keyed by sessionId
+
+  useAutoScroll.ts
+    - Takes ref to messages container
+    - useEffect watches messages.length, scrolls to bottom on change
+    - Smooth scroll behavior
+
+utils/
+  formatMessage.ts
+    - parseBold(text): **text** → <strong>text</strong>
+    - colorizePercent(value): wraps positive in green span, negative in red
+    - formatNumber(n): 1234567 → "1.23M", 4300000000 → "4.3B"
+    - formatPrice(n): adds $ and comma separators → "$1,234.56"
+
+  mockApi.ts
+    - Array of 8 realistic finance responses with bold, stats, % values
+    - async mockSend(message): returns after 1.2–2s random delay
+    - Used in development before real API is connected
+
+index.tsx  (main export)
+  - Assembles all components into full layout
+  - Props: apiEndpoint?, userId?, initialMessage?, onSessionChange?
+  - Defaults to mockApi if no apiEndpoint provided
+  - Export: export default FinsightChat
+
+════════════════════════════════════════════
+CHATBOT SYSTEM DESIGN — CONVERSATION PIPELINE
+════════════════════════════════════════════
+Every user message goes through this exact pipeline:
+
+  User Message
+      ↓
+  [1] Ticker Extractor     — regex scan for uppercase 1-5 char symbols
+      ↓                       cross-check against yfinance to confirm valid
+  [2] Intent Classifier    — facebook/bart-large-mnli zero-shot
+      ↓                       labels: stock_lookup | portfolio_analysis |
+                              market_summary | news_sentiment |
+                              concept_explanation | out_of_scope
+  [3] Market Data Fetch    — if tickers found: pull from yfinance
+      ↓                       check Redis cache first (5min TTL)
+  [4] Prompt Builder       — inject system prompt + market data + 
+      ↓                       last 10 messages as history
+  [5] LLM Call             — Mistral-7B-Instruct via HuggingFace API
+      ↓                       streaming SSE token by token
+  [6] Post-Processor       — highlight tickers, colorize %, format numbers
+      ↓
+  Final Response → stored in Redis session + returned to frontend
+
+System prompt injected every request:
+  "You are Finsight AI, a Bloomberg-grade financial assistant.
+   Today: {date}. Market: {OPEN|CLOSED}.
+   Use ▲ for gains, ▼ for losses. Format prices as $1,234.56.
+   Cite all figures. Never give direct buy/sell advice.
+   Frame recommendations as: 'analysts suggest' or 'data indicates'.
+   If asked anything non-financial, redirect politely."
+
+Session context tracked per conversation:
+  - Last 10 messages (role + content + timestamp)
+  - Tickers mentioned this session
+  - Inferred risk profile (conservative/moderate/aggressive)
+  - Preferred market (US / India / Crypto) from query patterns
+
+Error handling:
+  - Market data unavailable → use last cached value + note timestamp
+  - Out of scope query → polite redirect message, no LLM call
+  - Model timeout → retry once → fallback to cached similar response
+  - No ticker found → skip step 3, go straight to LLM
+
+════════════════════════════════════════════
+BACKEND — FastAPI + HuggingFace
+════════════════════════════════════════════
+Create these files inside backend/finsight/:
+
+router.py
+  — registers all routes under prefix /api/finsight
+  — import this and include in existing main FastAPI app
+
+services/
+  llm_service.py
+    - Calls HuggingFace Inference API
+    - Model: mistralai/Mistral-7B-Instruct-v0.2
+    - URL: https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2
+    - Mistral prompt format:
+        <s>[INST] <<SYS>>
+        {system_prompt}
+        Market Data: {ticker_json}
+        <</SYS>>
+        {chat_history_formatted}
+        {user_message} [/INST]
+    - Sync version: returns full response string
+    - Async streaming version: yields tokens via SSE
+
+  market_service.py
+    - get_ticker_data(symbol) using yfinance
+    - Returns: price, change_pct, volume, pe_ratio, market_cap,
+               week_52_high, week_52_low, avg_volume
+    - Redis cache key: ticker:{symbol} with 300s TTL
+    - get_market_movers(): top 5 gainers/losers from predefined watchlist
+    - is_market_open(): checks NYSE hours in US/Eastern timezone
+
+  sentiment_service.py
+    - Model: ProsusAI/finbert via HuggingFace Inference API
+    - get_sentiment(headlines: list[str]) → {positive, negative, neutral}
+    - get_news_headlines(symbol): Alpha Vantage NEWS_SENTIMENT endpoint
+    - Returns combined: sentiment score + top 3 headline strings
+
+  intent_service.py
+    - Model: facebook/bart-large-mnli via HuggingFace Inference API
+    - classify(message) → intent string from:
+        ["stock_lookup", "portfolio_analysis", "market_summary",
+         "news_sentiment", "concept_explanation", "out_of_scope"]
+    - Threshold: if top score < 0.4 → default to "concept_explanation"
+
+  session_service.py
+    - Redis key: session:{user_id}:{session_id}
+    - TTL: 86400s (24 hours)
+    - get_history(session_id) → list of {role, content, timestamp}
+    - append_message(session_id, role, content)
+    - clear_session(session_id)
+    - save_portfolio(user_id, holdings: list)
+
+schemas/
+  chat_schemas.py  (Pydantic v2 models)
+    ChatRequest:   session_id, message, user_id, stream=False
+    ChatResponse:  reply, intent, tickers_mentioned, sentiment_score,
+                   market_data: list[MarketData], timestamp
+    MarketData:    symbol, price, change_pct, volume, source
+    PortfolioItem: symbol, quantity, avg_price
+    PortfolioAnalysis: total_value, day_change_pct, beta, sharpe_ratio,
+                       risk_level, top_performer, bottom_performer,
+                       allocation: dict[str, float]
+
+utils/
+  prompt_builder.py
+    - build_prompt(message, history, ticker_data, system_prompt) → str
+    - Formats history as alternating User:/Assistant: pairs (last 10)
+    - Injects ticker_data as compact JSON table
+
+  ticker_extractor.py
+    - extract_tickers(text) → list[str]
+    - Regex: r'\b[A-Z]{1,5}\b' — finds candidates
+    - Validates each against yfinance: yf.Ticker(t).info exists
+    - Filters common false positives: I, A, AI, AN, THE, etc.
+
+  formatter.py
+    - format_large_number(n) → "1.2M", "4.3B", "890K"
+    - format_price(n) → "$1,234.56"
+    - add_arrows(value) → "▲2.3%" or "▼1.1%"
+
+API Routes:
+
+  POST /api/finsight/chat
+    Input:  ChatRequest
+    Flow:   extract_tickers → classify_intent → get_ticker_data (if any)
+            → build_prompt → call_llm → get_sentiment (if news intent)
+            → append_to_session → format_response
+    Output: ChatResponse
+
+  GET /api/finsight/stream?message=...&session_id=...&user_id=...
+    Same pipeline but returns StreamingResponse (text/event-stream)
+    Each SSE event: data: {"token": "...", "done": false}
+    Final event:    data: {"token": "", "done": true, "metadata": {...}}
+
+  GET /api/finsight/ticker/{symbol}
+    Output: { symbol, price, change_pct, volume, pe_ratio, market_cap,
+              week_52_high, week_52_low, news: [{title, sentiment, url}] }
+
+  POST /api/finsight/portfolio/analyze
+    Input:  { holdings: [PortfolioItem] }
+    Fetches live prices for each holding
+    Computes: total_value, day P&L, weighted beta, Sharpe ratio,
+              sector allocation, risk_level (Low/Med/High/Aggressive)
+    Output: PortfolioAnalysis
+
+  GET /api/finsight/health
+    Output: { status, hf_api: ok|error, redis: ok|error, 
+              market_open: bool, model: "Mistral-7B-Instruct-v0.2" }
+
+Streaming implementation:
+  from fastapi.responses import StreamingResponse
+  import httpx
+
+  async def stream_hf(prompt: str):
+      async with httpx.AsyncClient(timeout=30) as client:
+          async with client.stream("POST", HF_URL,
+              headers={"Authorization": f"Bearer {HF_TOKEN}"},
+              json={"inputs": prompt, "parameters": {"stream": True}}
+          ) as r:
+              async for chunk in r.aiter_text():
+                  yield f"data: {chunk}\n\n"
+
+Market data fetch pattern:
+  async def get_ticker_data(symbol: str) -> dict:
+      cached = await redis.get(f"ticker:{symbol}")
+      if cached: return json.loads(cached)
+      t = yf.Ticker(symbol)
+      info = t.info
+      data = {
+          "symbol":       symbol,
+          "price":        info.get("currentPrice"),
+          "change_pct":   info.get("regularMarketChangePercent"),
+          "volume":       info.get("volume"),
+          "pe_ratio":     info.get("trailingPE"),
+          "market_cap":   info.get("marketCap"),
+          "52w_high":     info.get("fiftyTwoWeekHigh"),
+          "52w_low":      info.get("fiftyTwoWeekLow"),
+      }
+      await redis.setex(f"ticker:{symbol}", 300, json.dumps(data))
+      return data
+
+════════════════════════════════════════════
+INTEGRATION INTO EXISTING PROJECT
+════════════════════════════════════════════
+After generating all files, do these integration steps:
+
+1. Scan the existing app/ directory and find the main navigation 
+   component. Add a "Finsight AI" nav link with a terminal/chart icon.
+
+2. Create app/finsight/page.tsx:
+   import FinsightChat from "@/features/finsight"
+   export default function FinsightPage() {
+     return <FinsightChat apiEndpoint="/api/finsight" userId="rohit" />
+   }
+
+3. In backend main.py add:
+   from finsight.router import finsight_router
+   app.include_router(finsight_router, prefix="/api/finsight", 
+                      tags=["Finsight AI"])
+
+4. Append to requirements.txt (if not already present):
+   yfinance>=0.2.28, httpx>=0.27, redis>=5.0, 
+   structlog>=24.0, transformers>=4.40, torch>=2.2
+
+5. Create .env.example with:
+   HF_API_TOKEN=hf_your_token_here
+   ALPHA_VANTAGE_KEY=your_key_here
+   REDIS_URL=redis://localhost:6379
+   DATABASE_URL=postgresql://user:pass@localhost/finsight
+
+6. Create docker-compose.yml with services:
+   api (FastAPI on port 8000), redis (port 6379), postgres (port 5432)
+
+════════════════════════════════════════════
+OUTPUT REQUIREMENTS
+════════════════════════════════════════════
+- Write every file completely — no placeholders, no "// add here" comments
+- TypeScript strict mode on all frontend files
+- Full Python type hints + structlog logging on all backend files
+- Every function has error handling (try/catch or try/except)
+- Every API route returns meaningful error messages with correct HTTP codes
+- All secrets via environment variables — never hardcoded
+- Start by scanning the existing project structure first, 
+  then generate files that match existing patterns and conventions

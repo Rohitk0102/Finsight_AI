@@ -185,6 +185,7 @@ export interface CompanyDetailResponse {
   financials: FinancialsSnapshot;
   shareholding: ShareholdingSlice[];
   portfolioPosition?: PortfolioPosition | null;
+  about?: any;
 }
 
 export interface ChartPoint {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -48,8 +49,14 @@ class MarketRepository:
                 return None
             if _is_connectivity_error(exc):
                 raise MarketRepositoryUnavailableError(operation) from exc
-            logger.error(f"{operation} failed: {exc}")
-            raise MarketRepositoryError(operation) from exc
+            
+            # Extract detailed message if available from Supabase/Postgrest error
+            err_msg = str(exc)
+            if hasattr(exc, "message"):
+                err_msg = exc.message
+            
+            logger.error(f"{operation} failed: {err_msg}")
+            raise MarketRepositoryError(err_msg) from exc
 
     async def load_watchlist_symbols(self, user_id: Optional[str]) -> list[str]:
         if not user_id:
@@ -124,6 +131,46 @@ class MarketRepository:
             .eq("article_id", article_id),
             operation="market_bookmark_delete",
         )
+
+    async def ensure_profile(self, user_id: str, email: str = "") -> None:
+        try:
+            # 1. Check by clerk_id
+            profile_check = await self._execute_query(
+                self.client.table("user_profiles").select("clerk_id").eq("clerk_id", user_id),
+                operation="market_profile_check",
+            )
+            if profile_check.data:
+                return
+
+            # 2. If not found by clerk_id, check by email if provided
+            if email:
+                email_check = await self._execute_query(
+                    self.client.table("user_profiles").select("clerk_id").eq("email", email),
+                    operation="market_profile_email_check",
+                )
+                if email_check.data:
+                    # User exists by email but has no clerk_id (or different one)
+                    # Update the clerk_id for this user
+                    logger.info(f"Updating clerk_id for existing user {email}")
+                    await self._execute_query(
+                        self.client.table("user_profiles").update({"clerk_id": user_id}).eq("email", email),
+                        operation="market_profile_update_clerk_id",
+                    )
+                    return
+
+            # 3. Truly new user, try to insert
+            logger.info(f"Auto-creating user profile for {user_id} in markets repository")
+            await self._execute_query(
+                self.client.table("user_profiles").insert(
+                    {
+                        "clerk_id": user_id,
+                        "email": email,
+                    }
+                ),
+                operation="market_profile_create",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to ensure user profile exists: {exc}")
 
     async def upsert_watchlist(self, user_id: str, *, symbol: str, exchange: str, notes: Optional[str]) -> None:
         await self._execute_query(

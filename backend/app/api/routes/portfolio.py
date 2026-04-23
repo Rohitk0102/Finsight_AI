@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from datetime import datetime, timezone
 import httpx
@@ -52,9 +53,24 @@ async def _apply_rate_limit(
         logger.warning(f"Rate limit bypassed for {endpoint} due to Redis degradation: {exc}")
 
 
+from decimal import Decimal
+
+def _cast_decimals(data: Any) -> Any:
+    if isinstance(data, list):
+        return [_cast_decimals(i) for i in data]
+    if isinstance(data, dict):
+        return {k: _cast_decimals(v) for k, v in data.items()}
+    if isinstance(data, Decimal):
+        return float(data)
+    return data
+
+
 async def _execute_query(query, *, operation: str, fail_open: bool = False):
     try:
-        return await asyncio.to_thread(query.execute)
+        result = await asyncio.to_thread(query.execute)
+        if result and result.data:
+            result.data = _cast_decimals(result.data)
+        return result
     except Exception as exc:
         if fail_open:
             logger.warning(f"{operation} skipped due to DB degradation: {exc}")
@@ -237,53 +253,3 @@ async def unlink_broker(
         operation=f"broker_unlink:{broker_account_id}",
     )
     return {"message": "Broker account unlinked"}
-
-
-@router.post("/brokers/groww/import-csv")
-async def import_groww_csv(
-    csv_content: str,
-    current_user: dict = Depends(get_current_user),
-):
-    """Import Groww holdings from CSV export."""
-    try:
-        from app.services.broker.groww_broker import GrowwBroker
-        broker = GrowwBroker()
-        holdings = broker.import_from_csv(csv_content)
-        
-        # Create or get Groww broker account
-        account_result = await _execute_query(
-            supabase.table("broker_accounts").upsert(
-                {
-                    "user_id": current_user["id"],
-                    "broker": "groww",
-                    "account_id": "csv_import",
-                    "display_name": "Groww (CSV Import)",
-                    "is_active": True,
-                },
-                on_conflict="user_id,broker",
-            ),
-            operation="groww_broker_account_upsert",
-        )
-        
-        broker_account_id = account_result.data[0]["id"]
-        
-        # Add broker account ID to holdings
-        for h in holdings:
-            h["user_id"] = current_user["id"]
-            h["broker_account_id"] = broker_account_id
-            
-        if holdings:
-            await _execute_query(
-                supabase.table("holdings").upsert(
-                    holdings,
-                    on_conflict="broker_account_id,ticker",
-                ),
-                operation="groww_holdings_upsert",
-            )
-            
-        return {"message": "CSV import successful", "holdings_imported": len(holdings)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Groww CSV import failed: {e}")
-        raise HTTPException(status_code=400, detail=f"CSV import failed: {str(e)}")

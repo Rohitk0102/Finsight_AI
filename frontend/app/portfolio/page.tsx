@@ -235,6 +235,14 @@ export default function PortfolioPage() {
                       <td className={`px-5 py-3.5 text-right text-[13px] font-semibold ${day.colorClass}`}>
                         {day.symbol} {day.text}
                       </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <Link
+                          href={`/predictor?ticker=${h.ticker}`}
+                          className="btn-secondary px-2.5 py-1 text-[11px] font-semibold"
+                        >
+                          Predict
+                        </Link>
+                      </td>
                     </tr>
                   );
                 })}

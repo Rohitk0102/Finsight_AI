@@ -314,43 +314,6 @@ class TestCompletePortfolio:
             assert len(portfolio["positions"]) == 1
 
 
-class TestCSVImport:
-    """Test CSV import functionality"""
-    
-    def test_import_csv_success(self, groww_broker):
-        """Test successful CSV import"""
-        csv_content = """Symbol,Quantity,Avg Cost,LTP
-RELIANCE,10,2500.00,2847.50
-TCS,5,3200.00,3450.00"""
-        
-        holdings = groww_broker.import_from_csv(csv_content)
-        
-        assert len(holdings) == 2
-        assert holdings[0]["ticker"] == "RELIANCE.NS"
-        assert holdings[0]["quantity"] == 10
-        assert holdings[1]["ticker"] == "TCS.NS"
-    
-    def test_import_csv_invalid_data(self, groww_broker):
-        """Test CSV import with invalid data"""
-        csv_content = """Symbol,Quantity,Avg Cost,LTP
-RELIANCE,invalid,2500.00,2847.50
-TCS,5,3200.00,3450.00"""
-        
-        holdings = groww_broker.import_from_csv(csv_content)
-        
-        # Should skip invalid row
-        assert len(holdings) == 1
-        assert holdings[0]["ticker"] == "TCS.NS"
-    
-    def test_import_csv_empty(self, groww_broker):
-        """Test CSV import with empty content"""
-        csv_content = """Symbol,Quantity,Avg Cost,LTP"""
-        
-        holdings = groww_broker.import_from_csv(csv_content)
-        
-        assert holdings == []
-
-
 class TestUtilityMethods:
     """Test utility methods"""
     
@@ -368,8 +331,3 @@ class TestUtilityMethods:
         """Test safe decimal conversion with None"""
         result = groww_broker._safe_decimal(None)
         assert float(result) == 0
-    
-    def test_get_auth_url_not_implemented(self, groww_broker):
-        """Test that get_auth_url raises NotImplementedError"""
-        with pytest.raises(NotImplementedError):
-            groww_broker.get_auth_url()

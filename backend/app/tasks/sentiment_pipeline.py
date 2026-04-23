@@ -29,28 +29,6 @@ from app.tasks.data_sync import TRACKED_TICKERS
 from app.core.supabase import supabase
 from app.core.config import settings
 
-# Lazy FinBERT pipeline (loaded once per worker process)
-_finbert_pipeline = None
-
-
-def _get_finbert():
-    global _finbert_pipeline
-    if _finbert_pipeline is None:
-        try:
-            from transformers import pipeline as hf_pipeline
-            _finbert_pipeline = hf_pipeline(
-                "text-classification",
-                model="ProsusAI/finbert",
-                top_k=None,
-                device=-1,   # CPU; set device=0 for GPU
-            )
-            logger.info("FinBERT pipeline loaded")
-        except ImportError:
-            logger.warning("transformers not installed; falling back to keyword sentiment")
-            _finbert_pipeline = None
-    return _finbert_pipeline
-
-
 # ── Keyword fallback ──────────────────────────────────────────────────────────
 
 _POS = re.compile(
@@ -71,35 +49,56 @@ def _keyword_score(text: str) -> float:
 
 
 def _score_texts(headlines: list[str]) -> tuple[float, float]:
-    """Returns (mean_score, mean_confidence)."""
+    """Returns (mean_score, mean_confidence) using Hugging Face API or keyword fallback."""
     if not headlines:
         return 0.0, 0.0
 
-    pipe = _get_finbert()
-    scores, confs = [], []
+    import httpx
+    import statistics
 
-    if pipe is not None:
-        # Batch FinBERT inference
+    scores, confs = [], []
+    # yiyanghkust/finbert-tone is highly reliable on the serverless Inference API
+    api_url = "https://api-inference.huggingface.co/models/yiyanghkust/finbert-tone"
+    headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
+
+    # Use the API if token is present
+    if settings.HUGGINGFACE_API_KEY:
         try:
-            batch = pipe(headlines, truncation=True, max_length=128, batch_size=16)
-            for result in batch:
-                label_scores = {r["label"]: r["score"] for r in result}
-                s = label_scores.get("positive", 0.0) - label_scores.get("negative", 0.0)
-                c = max(label_scores.values())
-                scores.append(s)
-                confs.append(c)
+            with httpx.Client(timeout=15) as client:
+                # We send the headlines as inputs
+                response = client.post(api_url, headers=headers, json={"inputs": headlines})
+                response.raise_for_status()
+                
+                results = response.json()
+                
+                # Handling single string result vs list of results
+                if isinstance(results, dict) and "error" in results:
+                    raise Exception(f"HF API Error: {results['error']}")
+                
+                if not isinstance(results, list):
+                    raise Exception("Unexpected HF API response format")
+
+                # If single string passed, response is [ [ {...} ] ]
+                # Since we passed a list, response is [ [ {...}, {...} ], ... ]
+                for result in results:
+                    # Convert labels to lowercase for robust matching
+                    label_scores = {r["label"].lower(): r["score"] for r in result}
+                    s = label_scores.get("positive", 0.0) - label_scores.get("negative", 0.0)
+                    c = max(label_scores.values())
+                    scores.append(s)
+                    confs.append(c)
+
         except Exception as exc:
-            logger.warning(f"FinBERT batch inference failed: {exc}")
-            # Fall through to keyword scoring
-            for h in headlines:
-                scores.append(_keyword_score(h))
-                confs.append(0.5)
-    else:
+            logger.warning(f"FinBERT API inference failed: {exc}. Falling back to keyword scoring.")
+            scores = []
+            confs = []
+
+    # Fallback to keyword scoring if API fails or no token
+    if not scores:
         for h in headlines:
             scores.append(_keyword_score(h))
             confs.append(0.5)
 
-    import statistics
     mean_score = statistics.mean(scores) if scores else 0.0
     mean_conf  = statistics.mean(confs)  if confs  else 0.0
     return round(float(mean_score), 4), round(float(mean_conf), 4)

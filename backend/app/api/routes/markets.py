@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Optional, Any
+import urllib.parse
 import websockets.exceptions
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
@@ -59,9 +60,22 @@ async def _apply_rate_limit(request: Request | None, endpoint: str, *, limit: in
         logger.warning(f"Rate limit bypassed for markets {endpoint}: {exc}")
 
 
+from decimal import Decimal
+
+def _cast_decimals(data: Any) -> Any:
+    if isinstance(data, list):
+        return [_cast_decimals(i) for i in data]
+    if isinstance(data, dict):
+        return {k: _cast_decimals(v) for k, v in data.items()}
+    if isinstance(data, Decimal):
+        return float(data)
+    return data
+
+
 async def _repository_call(awaitable):
     try:
-        return await awaitable
+        result = await awaitable
+        return _cast_decimals(result)
     except MarketRepositoryUnavailableError:
         raise HTTPException(
             status_code=503,
@@ -94,9 +108,9 @@ async def get_overview(
         _repository_call(market_repository.load_watchlist_symbols(user_id)),
         _repository_call(market_repository.load_bookmarked_urls(user_id)),
     )
-    cache_key = f"markets:overview:{':'.join(sorted(watchlist_symbols[:6])) or 'anon'}"
+    cache_key = f"markets:overview:{user_id or 'anon'}"
     cached = await redis_get(cache_key)
-    if cached and not user_id:
+    if cached:
         return cached
     overview = await market_service.get_overview(watchlist_symbols, bookmarks)
     await redis_set(cache_key, overview.model_dump(mode="json"), ttl=120)
@@ -148,8 +162,15 @@ async def get_company(
 ):
     _feature_enabled()
     await _apply_rate_limit(request, "markets_company_detail")
+    
+    # Unquote symbol to handle '&', etc.
+    symbol = urllib.parse.unquote(symbol)
     normalized = market_service.normalize_symbol(symbol)
     user_id = current_user["id"] if current_user else None
+    
+    if user_id:
+        await market_repository.ensure_profile(user_id, current_user.get("email", ""))
+        
     cache_key = f"markets:company:{normalized}"
     cached = await redis_get(cache_key)
 
@@ -180,12 +201,22 @@ async def get_company_chart(
 ):
     _feature_enabled()
     await _apply_rate_limit(request, "markets_company_chart")
+    symbol = urllib.parse.unquote(symbol)
     normalized = market_service.normalize_symbol(symbol)
     cache_key = f"markets:chart:{normalized}:{range_value.value}"
     cached = await redis_get(cache_key)
     if cached:
         return cached
-    chart = await market_service.get_chart(normalized, range_value)
+
+    try:
+        chart = await market_service.get_chart(normalized, range_value)
+    except Exception as exc:
+        logger.error(f"Failed to fetch chart for {normalized}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chart data is temporarily unavailable.",
+        )
+
     await redis_set(cache_key, chart.model_dump(mode="json"), ttl=180)
     return chart
 
@@ -199,6 +230,7 @@ async def get_company_news(
 ):
     _feature_enabled()
     await _apply_rate_limit(request, "markets_company_news")
+    symbol = urllib.parse.unquote(symbol)
     normalized = market_service.normalize_symbol(symbol)
     user_id = current_user["id"] if current_user else None
     bookmarks = await _repository_call(market_repository.load_bookmarked_urls(user_id))
@@ -207,8 +239,13 @@ async def get_company_news(
     if cached:
         base_articles = [EnrichedNewsArticle.model_validate(item) for item in cached]
     else:
-        base_articles = await market_service.get_company_news(normalized, limit=limit, bookmarked_urls=set())
-        await redis_set(cache_key, [item.model_dump(mode="json") for item in base_articles], ttl=180)
+        try:
+            base_articles = await market_service.get_company_news(normalized, limit=limit, bookmarked_urls=set())
+            await redis_set(cache_key, [item.model_dump(mode="json") for item in base_articles], ttl=180)
+        except Exception as exc:
+            logger.error(f"Failed to fetch company news for {normalized}: {exc}")
+            # Return empty list on news failure instead of crashing
+            return []
     return _with_bookmarks(base_articles, bookmarks)
 
 
@@ -275,10 +312,13 @@ async def add_watchlist(
     current_user: dict = Depends(get_current_user),
 ):
     _feature_enabled()
+    user_id = current_user["id"]
+    await market_repository.ensure_profile(user_id, current_user.get("email", ""))
+    
     symbol = market_service.normalize_symbol(payload.symbol)
     await _repository_call(
         market_repository.upsert_watchlist(
-            current_user["id"],
+            user_id,
             symbol=symbol,
             exchange=payload.exchange,
             notes=payload.notes,
@@ -312,7 +352,9 @@ async def add_bookmark(
     current_user: dict = Depends(get_current_user),
 ):
     _feature_enabled()
-    await _repository_call(market_repository.add_bookmark(current_user["id"], payload))
+    user_id = current_user["id"]
+    await market_repository.ensure_profile(user_id, current_user.get("email", ""))
+    await _repository_call(market_repository.add_bookmark(user_id, payload))
     return MutationResponse(message="Article bookmarked")
 
 
@@ -340,8 +382,11 @@ async def add_alert(
     current_user: dict = Depends(get_current_user),
 ):
     _feature_enabled()
+    user_id = current_user["id"]
+    await market_repository.ensure_profile(user_id, current_user.get("email", ""))
+    
     normalized = market_service.normalize_symbol(payload.symbol)
-    await _repository_call(market_repository.create_alert(current_user["id"], payload, symbol=normalized))
+    await _repository_call(market_repository.create_alert(user_id, payload, symbol=normalized))
     return MutationResponse(message="Alert created")
 
 
@@ -357,13 +402,20 @@ async def delete_alert(
 
 @router.websocket("/ws")
 async def markets_ws(websocket: WebSocket):
+    logger.info("New market websocket request received")
     if not settings.FEATURE_MARKETS:
+        logger.warning("Markets feature disabled, rejecting websocket")
         await websocket.close(code=1008, reason="Markets module disabled")
         return
 
-    await websocket.accept()
-    symbols: set[str] = set()
-    await websocket.send_json(MarketSocketMessage(type="heartbeat", message="connected").model_dump(mode="json"))
+    try:
+        await websocket.accept()
+        logger.info("Market websocket accepted")
+        symbols: set[str] = set()
+        await websocket.send_json(MarketSocketMessage(type="heartbeat", message="connected").model_dump(mode="json"))
+    except Exception as e:
+        logger.error(f"Failed to accept/init market websocket: {e}")
+        return
 
     try:
         while True:

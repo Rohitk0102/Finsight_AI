@@ -24,6 +24,7 @@ from app.schemas.markets import (
     AnalystConsensus,
     ChartPoint,
     ChartRange,
+    CompanyAbout,
     CompanyChartResponse,
     EconomicCalendarEvent,
     EnrichedNewsArticle,
@@ -265,8 +266,18 @@ class DefaultMarketDataProvider(MarketDataProvider):
     async def get_quote(self, symbol: str) -> PriceSnapshot:
         display_symbol = self._normalize_display_symbol(symbol)
         provider_symbol = self._provider_symbol(display_symbol)
-        detail = await self.fetcher.get_stock_detail(provider_symbol)
-        live = await self.fetcher.get_live_price(provider_symbol)
+        try:
+            detail, live = await asyncio.gather(
+                self.fetcher.get_stock_detail(provider_symbol),
+                self.fetcher.get_live_price(provider_symbol),
+                return_exceptions=True
+            )
+            detail = detail if not isinstance(detail, Exception) else None
+            live = live if not isinstance(live, Exception) else {}
+        except Exception as exc:
+            logger.warning(f"Fetch failure in get_quote for {symbol}: {exc}")
+            detail, live = None, {}
+
         identity = self._meta_to_identity(display_symbol, detail)
         previous_close = None
         if live.get("price") is not None and live.get("change") is not None:
@@ -294,19 +305,34 @@ class DefaultMarketDataProvider(MarketDataProvider):
             lastUpdated=datetime.now(timezone.utc),
         )
 
-    async def get_company_profile(self, symbol: str) -> tuple[PriceSnapshot, KeyStats]:
+    async def get_company_profile(self, symbol: str) -> tuple[PriceSnapshot, KeyStats, CompanyAbout]:
         display_symbol = self._normalize_display_symbol(symbol)
         provider_symbol = self._provider_symbol(display_symbol)
-        
+
         # Fetch both detail and live price in parallel for speed
-        detail_task = self.fetcher.get_stock_detail(provider_symbol)
-        live_task = self.fetcher.get_live_price(provider_symbol)
-        detail, live = await asyncio.gather(detail_task, live_task)
-        
+        try:
+            # We use yfinance directly for 'about' data if available
+            def _fetch_extra():
+                t = yf.Ticker(provider_symbol)
+                return t.info
+
+            results = await asyncio.gather(
+                self.fetcher.get_stock_detail(provider_symbol),
+                self.fetcher.get_live_price(provider_symbol),
+                asyncio.to_thread(_fetch_extra),
+                return_exceptions=True
+            )
+            detail = results[0] if not isinstance(results[0], Exception) else None
+            live = results[1] if not isinstance(results[1], Exception) else {}
+            extra_info = results[2] if not isinstance(results[2], Exception) else {}
+        except Exception as exc:
+            logger.warning(f"Parallel fetch failure in get_company_profile for {symbol}: {exc}")
+            detail, live, extra_info = None, {}, {}
+
         if not detail:
             # Fallback to a bare-bones quote if detail fails
             quote = await self.get_quote(display_symbol)
-            return quote, KeyStats()
+            return quote, KeyStats(), CompanyAbout()
 
         identity = self._meta_to_identity(display_symbol, detail)
         previous_close = None
@@ -340,7 +366,37 @@ class DefaultMarketDataProvider(MarketDataProvider):
             week52Low=getattr(detail, "week_52_low", None),
             avgVolume=getattr(detail, "avg_volume", None),
         )
-        return quote, stats
+
+        # Extract CEO and Founded from extra_info
+        description = extra_info.get("longBusinessSummary")
+        ceo = extra_info.get("ceo")
+        if not ceo and extra_info.get("companyOfficers"):
+            officers = extra_info.get("companyOfficers")
+            if isinstance(officers, list) and len(officers) > 0:
+                ceo = officers[0].get("name")
+        
+        if not ceo and description:
+            match = re.search(r"Mr\.\s+([A-Z][a-z]+\s+[A-Z][a-z]+)\s+is\s+the\s+(?:CEO|Managing\s+Director)", description)
+            if match:
+                ceo = match.group(1)
+
+        founded = None
+        if description:
+            match = re.search(r"(?:founded|incorporated|established|established\s+in|started\s+in)\s+(?:in\s+)?(\d{4})", description, re.I)
+            if match:
+                founded = match.group(1)
+
+        about = CompanyAbout(
+            description=description,
+            ceo=ceo,
+            founded=founded,
+            industry=extra_info.get("industry") or getattr(detail, "industry", None),
+            website=extra_info.get("website"),
+            employees=extra_info.get("fullTimeEmployees"),
+            headquarters=", ".join(filter(None, [extra_info.get("city"), extra_info.get("state"), extra_info.get("country")]))
+        )
+
+        return quote, stats, about
 
     async def get_analyst_consensus(self, symbol: str) -> AnalystConsensus:
         display_symbol = self._normalize_display_symbol(symbol)
@@ -549,6 +605,20 @@ class DefaultMarketDataProvider(MarketDataProvider):
         return list(cards)
 
     async def get_market_lists(self) -> tuple[list[MarketMover], list[MarketMover], list[MarketMover], list[SectorHeatmapCell]]:
+        cache_key = "markets:global_lists"
+        try:
+            from app.core.redis import redis_get, redis_set
+            cached = await redis_get(cache_key)
+            if cached:
+                return (
+                    [MarketMover.model_validate(x) for x in cached[0]],
+                    [MarketMover.model_validate(x) for x in cached[1]],
+                    [MarketMover.model_validate(x) for x in cached[2]],
+                    [SectorHeatmapCell.model_validate(x) for x in cached[3]],
+                )
+        except Exception:
+            pass
+
         sample_symbols = [
             "RELIANCE",
             "TCS",
@@ -570,8 +640,8 @@ class DefaultMarketDataProvider(MarketDataProvider):
         
         movers: list[MarketMover] = []
         for res in results:
-            if isinstance(res, tuple) and len(res) == 2:
-                quote, stats = res
+            if isinstance(res, tuple) and len(res) >= 2:
+                quote, stats = res[0], res[1]
                 movers.append(
                     MarketMover(
                         **quote.model_dump(),
@@ -609,8 +679,20 @@ class DefaultMarketDataProvider(MarketDataProvider):
             for sector, items in by_sector.items()
         ]
         heatmap.sort(key=lambda cell: cell.changePct, reverse=True)
+        heatmap = heatmap[:8]
 
-        return top_gainers, top_losers, most_active, heatmap[:8]
+        try:
+            from app.core.redis import redis_set
+            await redis_set(cache_key, [
+                [x.model_dump(mode="json") for x in top_gainers],
+                [x.model_dump(mode="json") for x in top_losers],
+                [x.model_dump(mode="json") for x in most_active],
+                [x.model_dump(mode="json") for x in heatmap],
+            ], ttl=120)
+        except Exception:
+            pass
+
+        return top_gainers, top_losers, most_active, heatmap
 
     def _market_cap_bucket(self, market_cap: Optional[float]) -> Optional[str]:
         if market_cap is None:
@@ -621,74 +703,95 @@ class DefaultMarketDataProvider(MarketDataProvider):
             return "mid"
         return "small"
 
+    def _safe_float(self, val: Any) -> Optional[float]:
+        try:
+            fval = float(val)
+            if pd.isna(fval) or pd.isnull(fval):
+                return None
+            return fval
+        except (ValueError, TypeError):
+            return None
+
     async def get_chart(self, symbol: str, range_value: ChartRange) -> CompanyChartResponse:
-        period_map = {
-            ChartRange.D1: ("5d", "1h"),
-            ChartRange.W1: ("1mo", "1d"),
-            ChartRange.M1: ("1mo", "1d"),
-            ChartRange.M3: ("3mo", "1d"),
-            ChartRange.M6: ("6mo", "1d"),
-            ChartRange.Y1: ("1y", "1d"),
-            ChartRange.Y5: ("5y", "1wk"),
-        }
-        period, interval = period_map[range_value]
-        provider_symbol = self._provider_symbol(symbol)
-        points = await self.fetcher.get_ohlcv(provider_symbol, period=period, interval=interval)
-        if not points:
-            return CompanyChartResponse(symbol=self._normalize_display_symbol(symbol), range=range_value, points=[])
+        try:
+            period_map = {
+                ChartRange.D1: ("5d", "1h"),
+                ChartRange.W1: ("1mo", "1d"),
+                ChartRange.M1: ("1mo", "1d"),
+                ChartRange.M3: ("3mo", "1d"),
+                ChartRange.M6: ("6mo", "1d"),
+                ChartRange.Y1: ("1y", "1d"),
+                ChartRange.Y5: ("5y", "1wk"),
+            }
+            period, interval = period_map[range_value]
+            provider_symbol = self._provider_symbol(symbol)
+            points = await self.fetcher.get_ohlcv(provider_symbol, period=period, interval=interval)
+            if not points:
+                return CompanyChartResponse(symbol=self._normalize_display_symbol(symbol), range=range_value, points=[])
 
-        frame = pd.DataFrame(
-            [
-                {
-                    "timestamp": datetime.combine(point.date, time.min, tzinfo=timezone.utc),
-                    "open": point.open,
-                    "high": point.high,
-                    "low": point.low,
-                    "close": point.close,
-                    "volume": point.volume,
-                }
-                for point in points
-            ]
-        )
-        close = frame["close"]
-        frame["sma20"] = close.rolling(window=20).mean()
-        frame["ema20"] = close.ewm(span=20, adjust=False).mean()
-        delta = close.diff()
-        gain = delta.clip(lower=0).rolling(window=14).mean()
-        loss = (-delta.clip(upper=0)).rolling(window=14).mean()
-        rs = gain / loss.replace(0, pd.NA)
-        frame["rsi14"] = 100 - (100 / (1 + rs))
-        ema_fast = close.ewm(span=12, adjust=False).mean()
-        ema_slow = close.ewm(span=26, adjust=False).mean()
-        frame["macd"] = ema_fast - ema_slow
-        frame["macdSignal"] = frame["macd"].ewm(span=9, adjust=False).mean()
-        rolling_std = close.rolling(window=20).std()
-        frame["bbUpper"] = frame["sma20"] + (rolling_std * 2)
-        frame["bbLower"] = frame["sma20"] - (rolling_std * 2)
-
-        chart_points = [
-            ChartPoint(
-                timestamp=row["timestamp"],
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                volume=int(row["volume"]),
-                sma20=float(row["sma20"]) if pd.notna(row["sma20"]) else None,
-                ema20=float(row["ema20"]) if pd.notna(row["ema20"]) else None,
-                rsi14=float(row["rsi14"]) if pd.notna(row["rsi14"]) else None,
-                macd=float(row["macd"]) if pd.notna(row["macd"]) else None,
-                macdSignal=float(row["macdSignal"]) if pd.notna(row["macdSignal"]) else None,
-                bbUpper=float(row["bbUpper"]) if pd.notna(row["bbUpper"]) else None,
-                bbLower=float(row["bbLower"]) if pd.notna(row["bbLower"]) else None,
+            frame = pd.DataFrame(
+                [
+                    {
+                        "timestamp": datetime.combine(point.date, time.min, tzinfo=timezone.utc),
+                        "open": point.open,
+                        "high": point.high,
+                        "low": point.low,
+                        "close": point.close,
+                        "volume": point.volume,
+                    }
+                    for point in points
+                ]
             )
-            for row in frame.to_dict(orient="records")
-        ]
-        return CompanyChartResponse(
-            symbol=self._normalize_display_symbol(symbol),
-            range=range_value,
-            points=chart_points,
-        )
+            
+            if frame.empty:
+                return CompanyChartResponse(symbol=self._normalize_display_symbol(symbol), range=range_value, points=[])
+
+            close = frame["close"]
+            frame["sma20"] = close.rolling(window=20).mean()
+            frame["ema20"] = close.ewm(span=20, adjust=False).mean()
+            delta = close.diff()
+            gain = delta.clip(lower=0).rolling(window=14).mean()
+            loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+            rs = gain / loss.replace(0, pd.NA)
+            frame["rsi14"] = 100 - (100 / (1 + rs))
+            ema_fast = close.ewm(span=12, adjust=False).mean()
+            ema_slow = close.ewm(span=26, adjust=False).mean()
+            frame["macd"] = ema_fast - ema_slow
+            frame["macdSignal"] = frame["macd"].ewm(span=9, adjust=False).mean()
+            rolling_std = close.rolling(window=20).std()
+            frame["bbUpper"] = frame["sma20"] + (rolling_std * 2)
+            frame["bbLower"] = frame["sma20"] - (rolling_std * 2)
+
+            chart_points = [
+                ChartPoint(
+                    timestamp=row["timestamp"],
+                    open=self._safe_float(row["open"]) or 0,
+                    high=self._safe_float(row["high"]) or 0,
+                    low=self._safe_float(row["low"]) or 0,
+                    close=self._safe_float(row["close"]) or 0,
+                    volume=int(row["volume"]) if pd.notna(row["volume"]) else 0,
+                    sma20=self._safe_float(row["sma20"]),
+                    ema20=self._safe_float(row["ema20"]),
+                    rsi14=self._safe_float(row["rsi14"]),
+                    macd=self._safe_float(row["macd"]),
+                    macdSignal=self._safe_float(row["macdSignal"]),
+                    bbUpper=self._safe_float(row["bbUpper"]),
+                    bbLower=self._safe_float(row["bbLower"]),
+                )
+                for row in frame.to_dict(orient="records")
+            ]
+            return CompanyChartResponse(
+                symbol=self._normalize_display_symbol(symbol),
+                range=range_value,
+                points=chart_points,
+            )
+        except Exception as exc:
+            logger.error(f"Chart generation failed for {symbol}: {exc}")
+            return CompanyChartResponse(
+                symbol=self._normalize_display_symbol(symbol),
+                range=range_value,
+                points=[]
+            )
 
 
 class DefaultMarketNewsProvider(MarketNewsProvider):
@@ -1047,12 +1150,12 @@ class GeminiImpactAnalyzer(ImpactAnalyzer):
 class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
     def __init__(self, fallback: ImpactAnalyzer) -> None:
         self.fallback = fallback
-        self.api_key = settings.HUGGINGFACE_API_KEY
+        self.api_keys = [k for k in [settings.HUGGINGFACE_API_KEY, settings.HUGGINGFACE_API_KEY_ALT] if k]
         self.model = settings.HUGGINGFACE_MARKETS_MODEL
         self.cache_ttl = timedelta(minutes=20)
         self.cooldown_default_seconds = 30
         self._response_cache: dict[str, tuple[datetime, EnrichedNewsArticle]] = {}
-        self._cooldown_until: Optional[datetime] = None
+        self._cooldowns: dict[str, datetime] = {}
 
     def _cache_key(
         self,
@@ -1085,8 +1188,8 @@ class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
     def _store_cache(self, cache_key: str, item: EnrichedNewsArticle) -> None:
         self._response_cache[cache_key] = (datetime.now(timezone.utc), item)
 
-    def _set_cooldown(self, seconds: float) -> None:
-        self._cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=max(seconds, 1))
+    def _set_cooldown(self, api_key: str, seconds: float) -> None:
+        self._cooldowns[api_key] = datetime.now(timezone.utc) + timedelta(seconds=max(seconds, 1))
 
     def _parse_retry_delay(self, response: httpx.Response) -> float:
         retry_after = response.headers.get("retry-after")
@@ -1111,7 +1214,7 @@ class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
         primary: Optional[SymbolIdentity],
         peers: list[SymbolIdentity],
     ) -> EnrichedNewsArticle:
-        if not self.api_key:
+        if not self.api_keys:
             return await self.fallback.analyze(article, primary, peers)
 
         cache_key = self._cache_key(article, primary, peers)
@@ -1119,8 +1222,11 @@ class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
         if cached:
             return cached
 
-        if self._cooldown_until and datetime.now(timezone.utc) < self._cooldown_until:
+        available_keys = [k for k in self.api_keys if k not in self._cooldowns or datetime.now(timezone.utc) >= self._cooldowns[k]]
+        if not available_keys:
             return await self.fallback.analyze(article, primary, peers)
+
+        current_api_key = available_keys[0]
 
         prompt = {
             "title": article.title,
@@ -1140,7 +1246,7 @@ class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
                 response = await client.post(
                     "https://router.huggingface.co/v1/chat/completions",
                     headers={
-                        "authorization": f"Bearer {self.api_key}",
+                        "authorization": f"Bearer {current_api_key}",
                         "content-type": "application/json",
                     },
                     json={
@@ -1164,7 +1270,7 @@ class HuggingFaceImpactAnalyzer(ImpactAnalyzer):
                     },
                 )
                 if response.status_code == 429:
-                    self._set_cooldown(self._parse_retry_delay(response))
+                    self._set_cooldown(current_api_key, self._parse_retry_delay(response))
                     raise httpx.HTTPStatusError(
                         "Hugging Face quota exhausted",
                         request=response.request,

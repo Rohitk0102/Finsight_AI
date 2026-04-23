@@ -1,3 +1,6 @@
+"use client";
+
+import React, { useEffect, useRef } from "react";
 import Link from "next/link";
 import {
   TrendingUp, BarChart2, Newspaper, Briefcase,
@@ -5,6 +8,101 @@ import {
   Shield, Zap,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+
+export function PerspectiveGridBackground({
+  children,
+  lineColor = "rgba(255, 255, 255, 0.06)",
+  lineCount = 16,
+  vanishingPointY = 0.55
+}: {
+  children: React.ReactNode;
+  lineColor?: string;
+  lineCount?: number;
+  vanishingPointY?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const drawGrid = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Base Background
+      ctx.fillStyle = "#0a0a0a";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = 1;
+
+      const vpX = width / 2;
+      const vpY = height * vanishingPointY;
+
+      // Vertical fanning lines
+      const bottomSpread = width * 3;
+      const spacing = bottomSpread / lineCount;
+      const startX = vpX - bottomSpread / 2;
+
+      ctx.beginPath();
+      for (let i = 0; i <= lineCount; i++) {
+        const x = startX + i * spacing;
+        ctx.moveTo(vpX, vpY);
+        ctx.lineTo(x, height);
+      }
+      ctx.stroke();
+
+      // Horizontal compressing lines
+      ctx.beginPath();
+      const numHorizontalLines = 14;
+      for (let i = 0; i <= numHorizontalLines; i++) {
+        const t = i / numHorizontalLines;
+        // Cubic easing for perspective compression
+        const tCubic = t * t * t;
+        const y = vpY + (height - vpY) * tCubic;
+        
+        const widthAtY = bottomSpread * ((y - vpY) / (height - vpY));
+        const leftX = vpX - widthAtY / 2;
+        const rightX = vpX + widthAtY / 2;
+        
+        ctx.moveTo(leftX, y);
+        ctx.lineTo(rightX, y);
+      }
+      ctx.stroke();
+
+      // Radial gradient overlay
+      const gradient = ctx.createRadialGradient(vpX, vpY, 0, vpX, vpY, width * 0.7);
+      gradient.addColorStop(0, "rgba(10, 10, 10, 0)");
+      gradient.addColorStop(1, "rgba(10, 10, 10, 1)");
+      
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+    };
+
+    drawGrid();
+    window.addEventListener("resize", drawGrid);
+    return () => window.removeEventListener("resize", drawGrid);
+  }, [lineColor, lineCount, vanishingPointY]);
+
+  return (
+    <div className="relative w-full h-full min-h-screen overflow-hidden">
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full z-0 block pointer-events-none"
+      />
+      <div className="relative z-10 w-full h-full flex flex-col items-center justify-center">
+        {children}
+      </div>
+    </div>
+  );
+}
 
 /* ── static data ─────────────────────────────────────────────── */
 const features = [
@@ -57,13 +155,13 @@ const liveCards = [
 /* ── page ────────────────────────────────────────────────────── */
 export default function HomePage() {
   return (
-    <div className="min-h-screen bg-[#030a05] text-[#edf7f0] overflow-x-hidden">
+    <div className="min-h-screen bg-[#0a0a0a] text-[#edf7f0] overflow-x-hidden">
 
       {/* ════════════════ NAV ════════════════ */}
       <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between
                       px-6 lg:px-10 py-4
                       border-b border-white/[0.06]
-                      bg-[#030a05]/80 backdrop-blur-lg">
+                      bg-[#0a0a0a]/80 backdrop-blur-lg">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-emerald-600/20 border border-emerald-600/30
                           flex items-center justify-center">
@@ -97,181 +195,162 @@ export default function HomePage() {
       </nav>
 
       {/* ════════════════ HERO ════════════════ */}
-      <section className="relative min-h-screen flex items-center pt-24 pb-20 px-6 lg:px-10 overflow-hidden">
+      <PerspectiveGridBackground>
+        <section className="w-full flex items-center pt-24 pb-20 px-6 lg:px-10">
+          <div className="max-w-7xl mx-auto w-full grid lg:grid-cols-2 gap-12 lg:gap-20 items-center relative z-10">
 
-        {/* background glows */}
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2
-                          w-[900px] h-[600px] rounded-full
-                          bg-emerald-950/60 blur-[140px]" />
-          <div className="absolute top-1/2 right-0
-                          w-[400px] h-[500px] rounded-full
-                          bg-emerald-900/20 blur-[100px]" />
-        </div>
-
-        {/* subtle dot grid */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #1a3d22 1px, transparent 1px)",
-            backgroundSize: "40px 40px",
-            opacity: 0.25,
-          }}
-        />
-
-        <div className="max-w-7xl mx-auto w-full grid lg:grid-cols-2 gap-12 lg:gap-20 items-center relative z-10">
-
-          {/* ── LEFT: copy ── */}
-          <div>
-            {/* pill badge */}
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
-                            bg-emerald-950 border border-emerald-800/60
-                            text-emerald-400 text-[11px] font-bold tracking-widest uppercase
-                            mb-8">
-              <Sparkles className="h-3 w-3" />
-              AI-Powered for Indian Markets
-            </div>
-
-            <h1 className="text-[52px] lg:text-[76px] font-black leading-[0.92] tracking-tight
-                           text-white mb-6">
-              Predict<br />
-              Smarter,{" "}
-              <span className="text-transparent bg-clip-text
-                               bg-gradient-to-r from-emerald-400 via-green-300 to-teal-400">
-                Invest Better
-              </span>
-            </h1>
-
-            <p className="text-[16px] text-[#6d9877] leading-relaxed max-w-md mb-10">
-              Finsight AI runs LSTM, XGBoost, and Prophet in an ensemble to predict
-              Indian stock prices — with real-time FinBERT sentiment scoring and
-              full broker integration.
-            </p>
-
-            <div className="flex flex-wrap gap-3 mb-14">
-              <Link
-                href="/sign-up"
-                className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl
-                           bg-emerald-600 hover:bg-emerald-500
-                           text-white font-bold text-[15px]
-                           shadow-xl shadow-emerald-950
-                           transition-all duration-200 hover:-translate-y-0.5"
-              >
-                Start Free <ArrowRight className="h-4 w-4" />
-              </Link>
-              <Link
-                href="/sign-in"
-                className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl
-                           border border-[#1e3a24] hover:border-emerald-700/50
-                           text-[#7aaa86] hover:text-white font-medium text-[15px]
-                           transition-all duration-200 hover:bg-emerald-950/50"
-              >
-                Sign In
-              </Link>
-            </div>
-
-            {/* stats strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 pt-8 border-t border-[#172d1e]">
-              {stats.map(({ value, label, note }) => (
-                <div key={label}>
-                  <div className="text-[30px] font-black text-emerald-400 leading-none mb-1">{value}</div>
-                  <div className="text-[13px] font-semibold text-white mb-0.5">{label}</div>
-                  <div className="text-[11px] text-[#4a6c54]">{note}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ── RIGHT: decorative AI card ── */}
-          <div className="hidden lg:flex flex-col gap-3">
-
-            {/* main prediction card */}
-            <div className="bg-[#090f0b] border border-[#1a3320] rounded-2xl p-6 shadow-2xl shadow-black/60">
-              <div className="flex items-start justify-between mb-5">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 mb-1">
-                    AI Prediction · Live
-                  </p>
-                  <h3 className="text-[22px] font-black text-white tracking-tight">RELIANCE.NS</h3>
-                  <p className="text-[13px] text-[#4a6c54] mt-0.5">₹2,847 · NSE</p>
-                </div>
-                <span className="px-3 py-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/25
-                                 text-emerald-400 text-[12px] font-black tracking-wide">
-                  BUY
-                </span>
+            {/* ── LEFT: copy ── */}
+            <div>
+              {/* pill badge */}
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full
+                              bg-emerald-950 border border-emerald-800/60
+                              text-emerald-400 text-[11px] font-bold tracking-widest uppercase
+                              mb-8">
+                <Sparkles className="h-3 w-3" />
+                AI-Powered for Indian Markets
               </div>
 
-              {/* mini bar chart */}
-              <div className="flex items-end gap-1 h-16 mb-5">
-                {miniChart.map((h, i) => (
-                  <div
-                    key={i}
-                    className={`flex-1 rounded-t-sm transition-all ${
-                      i >= miniChart.length - 4 ? "bg-emerald-500" : "bg-[#1a3320]"
-                    }`}
-                    style={{ height: `${h}%` }}
-                  />
+              <h1 className="text-[52px] lg:text-[76px] font-black leading-[0.92] tracking-tight
+                             text-white mb-6">
+                Predict<br />
+                Smarter,{" "}
+                <span className="text-transparent bg-clip-text
+                                 bg-gradient-to-r from-emerald-400 via-green-300 to-teal-400">
+                  Invest Better
+                </span>
+              </h1>
+
+              <p className="text-[16px] text-[#6d9877] leading-relaxed max-w-md mb-10">
+                Finsight AI runs LSTM, XGBoost, and Prophet in an ensemble to predict
+                Indian stock prices — with real-time FinBERT sentiment scoring and
+                full broker integration.
+              </p>
+
+              <div className="flex flex-wrap gap-3 mb-14">
+                <Link
+                  href="/sign-up"
+                  className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl
+                             bg-emerald-600 hover:bg-emerald-500
+                             text-white font-bold text-[15px]
+                             shadow-xl shadow-emerald-950
+                             transition-all duration-200 hover:-translate-y-0.5"
+                >
+                  Start Free <ArrowRight className="h-4 w-4" />
+                </Link>
+                <Link
+                  href="/sign-in"
+                  className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl
+                             border border-[#1e3a24] hover:border-emerald-700/50
+                             text-[#7aaa86] hover:text-white font-medium text-[15px]
+                             transition-all duration-200 hover:bg-emerald-950/50"
+                >
+                  Sign In
+                </Link>
+              </div>
+
+              {/* stats strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 pt-8 border-t border-[#172d1e]">
+                {stats.map(({ value, label, note }) => (
+                  <div key={label}>
+                    <div className="text-[30px] font-black text-emerald-400 leading-none mb-1">{value}</div>
+                    <div className="text-[13px] font-semibold text-white mb-0.5">{label}</div>
+                    <div className="text-[11px] text-[#4a6c54]">{note}</div>
+                  </div>
                 ))}
               </div>
+            </div>
 
-              {/* price targets */}
-              <div className="grid grid-cols-3 gap-2 mb-5">
-                {[
-                  { label: "1D Target", val: "₹2,903", pct: "+1.9%" },
-                  { label: "7D Target", val: "₹2,961", pct: "+4.0%" },
-                  { label: "30D Target", val: "₹3,102", pct: "+8.9%" },
-                ].map(({ label, val, pct }) => (
-                  <div key={label} className="bg-[#0f1f14] rounded-xl p-3 text-center">
-                    <p className="text-[9px] text-[#4a6c54] uppercase tracking-wide mb-1.5">{label}</p>
-                    <p className="text-[14px] font-black text-white leading-none mb-1">{val}</p>
-                    <p className="text-[11px] text-emerald-400 font-bold">{pct}</p>
+            {/* ── RIGHT: decorative AI card ── */}
+            <div className="hidden lg:flex flex-col gap-3">
+
+              {/* main prediction card */}
+              <div className="bg-[#090f0b] border border-[#1a3320] rounded-2xl p-6 shadow-2xl shadow-black/60">
+                <div className="flex items-start justify-between mb-5">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-600 mb-1">
+                      AI Prediction · Live
+                    </p>
+                    <h3 className="text-[22px] font-black text-white tracking-tight">RELIANCE.NS</h3>
+                    <p className="text-[13px] text-[#4a6c54] mt-0.5">₹2,847 · NSE</p>
+                  </div>
+                  <span className="px-3 py-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/25
+                                   text-emerald-400 text-[12px] font-black tracking-wide">
+                    BUY
+                  </span>
+                </div>
+
+                {/* mini bar chart */}
+                <div className="flex items-end gap-1 h-16 mb-5">
+                  {miniChart.map((h, i) => (
+                    <div
+                      key={i}
+                      className={`flex-1 rounded-t-sm transition-all ${
+                        i >= miniChart.length - 4 ? "bg-emerald-500" : "bg-[#1a3320]"
+                      }`}
+                      style={{ height: `${h}%` }}
+                    />
+                  ))}
+                </div>
+
+                {/* price targets */}
+                <div className="grid grid-cols-3 gap-2 mb-5">
+                  {[
+                    { label: "1D Target", val: "₹2,903", pct: "+1.9%" },
+                    { label: "7D Target", val: "₹2,961", pct: "+4.0%" },
+                    { label: "30D Target", val: "₹3,102", pct: "+8.9%" },
+                  ].map(({ label, val, pct }) => (
+                    <div key={label} className="bg-[#0f1f14] rounded-xl p-3 text-center">
+                      <p className="text-[9px] text-[#4a6c54] uppercase tracking-wide mb-1.5">{label}</p>
+                      <p className="text-[14px] font-black text-white leading-none mb-1">{val}</p>
+                      <p className="text-[11px] text-emerald-400 font-bold">{pct}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* confidence bar */}
+                <div className="flex items-center gap-3 text-[12px]">
+                  <span className="text-[#4a6c54] flex-shrink-0">Confidence</span>
+                  <div className="flex-1 h-1.5 bg-[#0f1f14] rounded-full overflow-hidden">
+                    <div className="w-[87%] h-full rounded-full bg-gradient-to-r from-emerald-700 to-emerald-400" />
+                  </div>
+                  <span className="font-black text-emerald-400 flex-shrink-0">87%</span>
+                </div>
+              </div>
+
+              {/* live ticker row */}
+              <div className="grid grid-cols-2 gap-3">
+                {liveCards.map((t) => (
+                  <div key={t.symbol}
+                    className="bg-[#090f0b] border border-[#1a3320] rounded-xl p-4
+                               hover:border-emerald-700/40 transition-colors duration-200">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-[#4a6c54] mb-1.5">{t.symbol}</p>
+                    <p className="text-[17px] font-black text-white leading-none mb-1">{t.price}</p>
+                    <p className={`text-[12px] font-bold ${t.up ? "text-emerald-400" : "text-red-400"}`}>{t.chg}</p>
                   </div>
                 ))}
               </div>
 
-              {/* confidence bar */}
-              <div className="flex items-center gap-3 text-[12px]">
-                <span className="text-[#4a6c54] flex-shrink-0">Confidence</span>
-                <div className="flex-1 h-1.5 bg-[#0f1f14] rounded-full overflow-hidden">
-                  <div className="w-[87%] h-full rounded-full bg-gradient-to-r from-emerald-700 to-emerald-400" />
+              {/* sentiment strip */}
+              <div className="bg-[#090f0b] border border-[#1a3320] rounded-xl p-4
+                              flex items-center gap-4">
+                <div className="w-9 h-9 rounded-full bg-emerald-500/15 border border-emerald-500/20
+                                flex items-center justify-center flex-shrink-0">
+                  <Activity className="h-4 w-4 text-emerald-400" />
                 </div>
-                <span className="font-black text-emerald-400 flex-shrink-0">87%</span>
-              </div>
-            </div>
-
-            {/* live ticker row */}
-            <div className="grid grid-cols-2 gap-3">
-              {liveCards.map((t) => (
-                <div key={t.symbol}
-                  className="bg-[#090f0b] border border-[#1a3320] rounded-xl p-4
-                             hover:border-emerald-700/40 transition-colors duration-200">
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-[#4a6c54] mb-1.5">{t.symbol}</p>
-                  <p className="text-[17px] font-black text-white leading-none mb-1">{t.price}</p>
-                  <p className={`text-[12px] font-bold ${t.up ? "text-emerald-400" : "text-red-400"}`}>{t.chg}</p>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-bold text-white mb-0.5">Market Sentiment</p>
+                  <p className="text-[11px] text-[#4a6c54] truncate">NIFTY 50 · Broadly positive</p>
                 </div>
-              ))}
-            </div>
-
-            {/* sentiment strip */}
-            <div className="bg-[#090f0b] border border-[#1a3320] rounded-xl p-4
-                            flex items-center gap-4">
-              <div className="w-9 h-9 rounded-full bg-emerald-500/15 border border-emerald-500/20
-                              flex items-center justify-center flex-shrink-0">
-                <Activity className="h-4 w-4 text-emerald-400" />
+                <span className="flex-shrink-0 px-2.5 py-1 rounded-lg
+                                 bg-emerald-500/10 border border-emerald-500/20
+                                 text-emerald-400 text-[11px] font-black">
+                  +0.72
+                </span>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[12px] font-bold text-white mb-0.5">Market Sentiment</p>
-                <p className="text-[11px] text-[#4a6c54] truncate">NIFTY 50 · Broadly positive</p>
-              </div>
-              <span className="flex-shrink-0 px-2.5 py-1 rounded-lg
-                               bg-emerald-500/10 border border-emerald-500/20
-                               text-emerald-400 text-[11px] font-black">
-                +0.72
-              </span>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </PerspectiveGridBackground>
 
       {/* ════════════════ FEATURES ════════════════ */}
       <section className="py-28 px-6 lg:px-10 border-t border-white/[0.04]">

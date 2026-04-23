@@ -178,3 +178,49 @@ async def angelone_connect(
     except Exception as e:
         logger.error(f"Angel One connect error: {e}")
         raise HTTPException(status_code=400, detail="Angel One connection failed")
+
+
+# ── Groww ─────────────────────────────────────────────────────────────────────
+
+@router.post("/groww/connect")
+async def groww_connect(
+    access_token: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Groww uses an official API access token."""
+    try:
+        broker = GrowwBroker()
+        is_valid = await broker.validate_token(access_token)
+        if not is_valid:
+            raise HTTPException(status_code=401, detail="Invalid Groww token")
+
+        # Groww API doesn't have a standard profile endpoint, use generic Finsight user details
+        account_id = f"groww_{current_user['id']}"
+        display_name = "Groww Account"
+
+        await _execute_query(
+            supabase.table("broker_accounts").upsert(
+                {
+                    "user_id": current_user["id"],
+                    "broker": "groww",
+                    "account_id": account_id,
+                    "display_name": display_name,
+                    "access_token_encrypted": encrypt_token(access_token),
+                    "is_active": True,
+                },
+                on_conflict="user_id,broker",
+            ),
+            operation="broker_groww_upsert",
+        )
+
+        return {"message": "Groww connected successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        from app.services.broker.groww_broker import GrowwAuthError
+        if isinstance(e, GrowwAuthError):
+            logger.error(f"Groww auth error: {e}")
+            raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Groww connect error: {e}")
+        raise HTTPException(status_code=400, detail="Groww connection failed")
+

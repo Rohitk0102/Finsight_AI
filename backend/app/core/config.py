@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     GNEWS_API_KEY: str = ""
     MARKETAUX_API_KEY: str = ""
     HUGGINGFACE_API_KEY: str = ""
+    HUGGINGFACE_API_KEY_ALT: str = ""
     HUGGINGFACE_MARKETS_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
